@@ -74,7 +74,7 @@
   <span style="font-size:22px">🏭</span>
   <div>
     <h1>Pedido Unificado a Fábrica</h1>
-    <div class="sub">Subí tus PDFs de órdenes → uno los pedidos por producto y variante → exportás el pedido único.</div>
+    <div class="sub">Subí tus PDFs de órdenes (se procesan en lotes de 3) → sumalos al pedido acumulado o armá uno nuevo → exportás el pedido único.</div>
   </div>
 </header>
 
@@ -82,7 +82,7 @@
   <div class="chat" id="chat">
     <div class="msg">
       <div class="who">Asistente</div>
-      <div class="bubble">¡Hola Facu! Soltá acá todos los PDFs de las órdenes (podés arrastrar varios juntos). Cuando estén cargados, tocá <b>Unificar pedidos</b> y te armo el pedido único para la fábrica más la facturación total.</div>
+      <div class="bubble">¡Hola Facu! Soltá acá los PDFs de las órdenes (los proceso en lotes de 3 para no pasarme del límite gratuito). Con <b>Armar pedido nuevo</b> empezás de cero; con <b>Sumar al pedido actual</b> agregás más órdenes a lo que ya tenías acumulado. Cuando quieras volver a cero, usá <b>Vaciar pedido acumulado</b>.</div>
     </div>
   </div>
 
@@ -96,8 +96,10 @@
   <div class="files" id="files"></div>
 
   <div class="row">
-    <button class="btn" id="go" disabled>Unificar pedidos</button>
-    <button class="btn ghost" id="clear" disabled>Limpiar</button>
+    <button class="btn" id="goSum" disabled>➕ Sumar al pedido actual</button>
+    <button class="btn" id="goNew" disabled>🆕 Armar pedido nuevo</button>
+    <button class="btn ghost" id="clear" disabled>Limpiar archivos</button>
+    <button class="btn ghost" id="reset" disabled>Vaciar pedido acumulado</button>
   </div>
 
   <div id="status"></div>
@@ -108,6 +110,9 @@
 const $ = (s) => document.querySelector(s);
 let selected = []; // {name, file}
 let lastAgg = null;
+let allOrders = []; // pedidos ya extraidos, acumulados entre tandas
+let allErrors = [];
+const BATCH_SIZE = 3; // PDFs por request, para no pasar el rate limit gratuito
 
 const drop = $("#drop"), fileInput = $("#file");
 drop.addEventListener("click", () => fileInput.click());
@@ -138,13 +143,19 @@ function renderFiles() {
     chip.querySelector("button").onclick = () => { selected.splice(i, 1); renderFiles(); };
     c.appendChild(chip);
   });
-  $("#go").disabled = selected.length === 0;
-  $("#clear").disabled = selected.length === 0;
+  setButtonsDisabled(false);
 }
 
 $("#clear").onclick = () => {
-  selected = []; renderFiles(); $("#result").innerHTML = ""; $("#status").innerHTML = "";
+  selected = []; renderFiles();
   fileInput.value = "";
+};
+
+$("#reset").onclick = () => {
+  allOrders = []; allErrors = []; lastAgg = null;
+  $("#result").innerHTML = ""; $("#status").innerHTML = "";
+  renderFiles();
+  addMsg("Listo, vacié el pedido acumulado. Subí PDFs nuevos cuando quieras.");
 };
 
 function toBase64(file) {
@@ -163,39 +174,79 @@ function addMsg(text) {
   $("#chat").appendChild(m);
 }
 
-$("#go").onclick = async () => {
-  $("#go").disabled = true; $("#clear").disabled = true;
-  $("#status").innerHTML = `<div class="note"><span class="spin"></span> Leyendo ${selected.length} PDF(s) con IA… esto puede tardar unos segundos.</div>`;
+function chunk(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+function setButtonsDisabled(disabled) {
+  $("#goSum").disabled = disabled || selected.length === 0;
+  $("#goNew").disabled = disabled || selected.length === 0;
+  $("#clear").disabled = disabled || selected.length === 0;
+  $("#reset").disabled = disabled || allOrders.length === 0;
+}
+
+async function procesar(modo) {
+  // modo: "sumar" o "nuevo"
+  if (selected.length === 0) return;
+  setButtonsDisabled(true);
   $("#result").innerHTML = "";
+
+  if (modo === "nuevo") { allOrders = []; allErrors = []; }
+
+  const batches = chunk(selected, BATCH_SIZE);
+  const nuevasOrdenes = [];
+  const nuevosErrores = [];
+
   try {
-    const files = [];
-    for (const s of selected) files.push({ name: s.name, dataBase64: await toBase64(s.file) });
+    for (let i = 0; i < batches.length; i++) {
+      $("#status").innerHTML = `<div class="note"><span class="spin"></span> Leyendo lote ${i + 1}/${batches.length} (${batches[i].length} PDF(s))…</div>`;
 
-    const resp = await fetch("/api/extract", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ files })
-    });
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || "Error del servidor");
+      const files = [];
+      for (const s of batches[i]) files.push({ name: s.name, dataBase64: await toBase64(s.file) });
 
-    const agg = PedidoAgg.aggregate(data.orders || []);
+      const resp = await fetch("/api/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files })
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "Error del servidor");
+
+      nuevasOrdenes.push(...(data.orders || []));
+      nuevosErrores.push(...(data.errors || []));
+    }
+
+    allOrders.push(...nuevasOrdenes);
+    allErrors.push(...nuevosErrores);
+
+    const agg = PedidoAgg.aggregate(allOrders);
     lastAgg = agg;
-    render(agg, data.errors || [], (data.orders || []).length);
+    render(agg, allErrors, allOrders.length, { nuevasEnEstaTanda: nuevasOrdenes.length, modo });
     $("#status").innerHTML = "";
+
+    selected = []; renderFiles();
+    fileInput.value = "";
   } catch (e) {
     $("#status").innerHTML = `<div class="err">⚠️ ${e.message}</div>`;
   } finally {
-    $("#go").disabled = selected.length === 0;
-    $("#clear").disabled = selected.length === 0;
+    setButtonsDisabled(false);
   }
-};
+}
 
-function render(agg, errors, nOrders) {
+$("#goSum").onclick = () => procesar("sumar");
+$("#goNew").onclick = () => procesar("nuevo");
+
+function render(agg, errors, nOrders, info) {
   const f = PedidoAgg.formatARS;
   let html = "";
 
-  addMsg(`Listo ✅ Uní <b>${nOrders}</b> orden(es) en <b>${agg.lineas.length}</b> productos distintos, <b>${agg.totalUnidades}</b> unidades en total.`);
+  if (info && info.modo === "sumar" && info.nuevasEnEstaTanda > 0) {
+    addMsg(`Sumé <b>${info.nuevasEnEstaTanda}</b> orden(es) nueva(s) al pedido acumulado. Total ahora: <b>${nOrders}</b> orden(es), <b>${agg.lineas.length}</b> productos distintos, <b>${agg.totalUnidades}</b> unidades.`);
+  } else {
+    addMsg(`Listo ✅ Uní <b>${nOrders}</b> orden(es) en <b>${agg.lineas.length}</b> productos distintos, <b>${agg.totalUnidades}</b> unidades en total.`);
+  }
 
   html += `<div class="cards">
     <div class="card"><div class="k">Órdenes procesadas</div><div class="v">${nOrders}</div></div>
