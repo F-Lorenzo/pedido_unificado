@@ -57,10 +57,11 @@ function readBody(req) {
   });
 }
 
-async function extractOne(apiKey, file) {
-  const pdfBuffer = Buffer.from(file.dataBase64, "base64");
-  const { text } = await pdfParse(pdfBuffer);
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
+async function callGroq(apiKey, text, attempt = 1) {
   const url = "https://api.groq.com/openai/v1/chat/completions";
   const payload = {
     model: MODEL,
@@ -80,12 +81,27 @@ async function extractOne(apiKey, file) {
     body: JSON.stringify(payload)
   });
 
+  if (resp.status === 429 && attempt < 4) {
+    const txt = await resp.text();
+    const m = txt.match(/try again in ([\d.]+)s/i);
+    const waitMs = m ? Math.ceil(parseFloat(m[1]) * 1000) + 500 : 5000 * attempt;
+    await sleep(waitMs);
+    return callGroq(apiKey, text, attempt + 1);
+  }
+
   if (!resp.ok) {
     const txt = await resp.text();
     throw new Error(`Groq ${resp.status}: ${txt.slice(0, 500)}`);
   }
 
-  const json = await resp.json();
+  return resp.json();
+}
+
+async function extractOne(apiKey, file) {
+  const pdfBuffer = Buffer.from(file.dataBase64, "base64");
+  const { text } = await pdfParse(pdfBuffer);
+
+  const json = await callGroq(apiKey, text);
   const content = json?.choices?.[0]?.message?.content || "";
   let parsed;
   try {
