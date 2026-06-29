@@ -4,7 +4,7 @@
 // La API key NUNCA se expone al navegador: vive solo aca, en el servidor,
 // leida desde la variable de entorno GROQ_API_KEY.
 
-import { PDFParse } from "pdf-parse";
+import pdfParse from "pdf-parse";
 
 const MODEL = "llama-3.3-70b-versatile"; // gratis en Groq, buena calidad para extraccion JSON
 
@@ -59,9 +59,7 @@ function readBody(req) {
 
 async function extractOne(apiKey, file) {
   const pdfBuffer = Buffer.from(file.dataBase64, "base64");
-  const parser = new PDFParse({ data: pdfBuffer });
-  const { text } = await parser.getText();
-  await parser.destroy();
+  const { text } = await pdfParse(pdfBuffer);
 
   const url = "https://api.groq.com/openai/v1/chat/completions";
   const payload = {
