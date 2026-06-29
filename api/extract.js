@@ -1,15 +1,17 @@
-// Serverless function (Vercel) — recibe PDFs en base64 y usa Google Gemini
-// para extraer los items y totales de cada orden como JSON estructurado.
+// Serverless function (Vercel) — recibe PDFs en base64, extrae el texto
+// localmente (pdf-parse) y usa Groq (capa gratuita) para estructurarlo en JSON.
 //
 // La API key NUNCA se expone al navegador: vive solo aca, en el servidor,
-// leida desde la variable de entorno GEMINI_API_KEY.
+// leida desde la variable de entorno GROQ_API_KEY.
 
-const MODEL = "gemini-2.0-flash"; // rapido y dentro de la capa gratuita
+import { pdf } from "pdf-parse";
 
-// Prompt que le explica a Gemini el formato exacto de estos PDFs.
+const MODEL = "llama-3.3-70b-versatile"; // gratis en Groq, buena calidad para extraccion JSON
+
+// Prompt que le explica al modelo el formato exacto de estos pedidos.
 const PROMPT = `Sos un extractor de datos de ordenes de compra de una tienda.
-Te paso el PDF de UNA orden. Devolve UNICAMENTE un objeto JSON valido (sin texto
-extra, sin markdown, sin backticks) con esta forma EXACTA:
+Te paso el TEXTO de UNA orden (extraido de un PDF). Devolve UNICAMENTE un objeto
+JSON valido (sin texto extra, sin markdown, sin backticks) con esta forma EXACTA:
 
 {
   "numeroOrden": "string o null",        // ej "395" (de 'Detalles de la orden #395')
@@ -38,7 +40,10 @@ REGLAS IMPORTANTES:
 - No inventes items. Solo los que aparezcan en la tabla 'Detalle del pedido'.
 - NO sumes a los items lo que diga en 'Notas del pedido'. Eso va solo en el campo "notas".
 - Si un valor no esta, usa null (o "" para strings de item).
-- Devolve solo el JSON, nada mas.`;
+- Devolve solo el JSON, nada mas.
+
+TEXTO DE LA ORDEN:
+`;
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -53,41 +58,42 @@ function readBody(req) {
 }
 
 async function extractOne(apiKey, file) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`;
+  const pdfBuffer = Buffer.from(file.dataBase64, "base64");
+  const { text } = await pdf(pdfBuffer);
+
+  const url = "https://api.groq.com/openai/v1/chat/completions";
   const payload = {
-    contents: [{
-      role: "user",
-      parts: [
-        { text: PROMPT },
-        { inline_data: { mime_type: "application/pdf", data: file.dataBase64 } }
-      ]
-    }],
-    generationConfig: {
-      temperature: 0,
-      response_mime_type: "application/json"
-    }
+    model: MODEL,
+    temperature: 0,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "user", content: PROMPT + text }
+    ]
   };
 
   const resp = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`
+    },
     body: JSON.stringify(payload)
   });
 
   if (!resp.ok) {
     const txt = await resp.text();
-    throw new Error(`Gemini ${resp.status}: ${txt.slice(0, 500)}`);
+    throw new Error(`Groq ${resp.status}: ${txt.slice(0, 500)}`);
   }
 
   const json = await resp.json();
-  const text = json?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  const content = json?.choices?.[0]?.message?.content || "";
   let parsed;
   try {
-    parsed = JSON.parse(text);
+    parsed = JSON.parse(content);
   } catch (e) {
     // por las dudas, intento rescatar el primer bloque {...}
-    const m = text.match(/\{[\s\S]*\}/);
-    if (!m) throw new Error("Gemini no devolvio JSON valido para " + file.name);
+    const m = content.match(/\{[\s\S]*\}/);
+    if (!m) throw new Error("El modelo no devolvio JSON valido para " + file.name);
     parsed = JSON.parse(m[0]);
   }
   parsed.archivo = file.name;
@@ -100,9 +106,9 @@ export default async function handler(req, res) {
     return;
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
-    res.status(500).json({ error: "Falta GEMINI_API_KEY en el servidor. Cargala en Vercel -> Settings -> Environment Variables." });
+    res.status(500).json({ error: "Falta GROQ_API_KEY en el servidor. Cargala en Vercel -> Settings -> Environment Variables." });
     return;
   }
 
@@ -118,7 +124,7 @@ export default async function handler(req, res) {
 
   const orders = [];
   const errors = [];
-  // procesamos de a uno (la capa gratuita tiene limite de requests por minuto)
+  // procesamos de a uno para no pasarnos del rate limit de la capa gratuita
   for (const f of files) {
     try {
       const o = await extractOne(apiKey, f);

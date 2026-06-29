@@ -1,7 +1,7 @@
 # 🏭 Pedido Unificado a Fábrica
 
 Web para subir los PDFs de tus órdenes, unirlos en un **pedido único** (sumando por
-producto + variante) y calcular la **facturación total**. Usa **Google Gemini**
+producto + variante) y calcular la **facturación total**. Usa **Groq**
 (capa gratuita) para leer los PDFs, y exporta el pedido a **PDF** y **CSV**.
 
 ---
@@ -20,11 +20,11 @@ producto + variante) y calcular la **facturación total**. Usa **Google Gemini**
 
 ---
 
-## Paso 1 — Conseguir la API key gratuita de Gemini
+## Paso 1 — Conseguir la API key gratuita de Groq
 
-1. Entrá a **https://aistudio.google.com/apikey** con tu cuenta de Google.
-2. Clic en **"Create API key"**.
-3. Copiá la clave (algo como `AIza...`). La vas a pegar en Vercel en el Paso 2.
+1. Entrá a **https://console.groq.com/keys** con tu cuenta (te podés registrar gratis).
+2. Clic en **"Create API Key"**.
+3. Copiá la clave (algo como `gsk_...`). La vas a pegar en Vercel en el Paso 2.
 
 > Es gratis. La capa gratuita alcanza de sobra para leer varios PDFs por día.
 
@@ -39,7 +39,7 @@ producto + variante) y calcular la **facturación total**. Usa **Google Gemini**
    - Si usás GitHub: subí la carpeta `pedido-unificado` a un repositorio nuevo,
      después en Vercel → **Add New → Project** → importás ese repo.
 3. Antes de terminar el deploy, en **Environment Variables** agregá:
-   - **Name:** `GEMINI_API_KEY`
+   - **Name:** `GROQ_API_KEY`
    - **Value:** la clave que copiaste en el Paso 1
 4. Clic en **Deploy**. En 1–2 minutos te da una URL pública (ej. `https://pedido-unificado.vercel.app`).
    ¡Esa es tu app, accesible desde cualquier lado!
@@ -50,7 +50,7 @@ producto + variante) y calcular la **facturación total**. Usa **Google Gemini**
 npm i -g vercel        # instala el comando vercel (una sola vez)
 cd pedido-unificado
 vercel                 # seguí los pasos; te pide loguearte
-vercel env add GEMINI_API_KEY   # pegá tu clave cuando te la pida
+vercel env add GROQ_API_KEY   # pegá tu clave cuando te la pida
 vercel --prod          # publica la versión final
 ```
 
@@ -59,7 +59,7 @@ vercel --prod          # publica la versión final
 ## Probar en tu compu antes de publicar (opcional)
 
 ```bash
-cp .env.example .env.local      # y pegá tu GEMINI_API_KEY dentro
+cp .env.example .env.local      # y pegá tu GROQ_API_KEY dentro
 npm i -g vercel
 vercel dev                      # abre http://localhost:3000
 ```
@@ -71,7 +71,7 @@ vercel dev                      # abre http://localhost:3000
 ```
 pedido-unificado/
 ├─ api/
-│  └─ extract.js        ← backend: recibe PDFs y llama a Gemini (acá vive la API key, segura)
+│  └─ extract.js        ← backend: extrae texto del PDF y llama a Groq (acá vive la API key, segura)
 ├─ public/
 │  ├─ index.html        ← la web (chat, subida, tabla, exportar PDF/CSV)
 │  └─ aggregate.js      ← lógica de unificación (suma por producto+variante)
@@ -95,4 +95,3 @@ pedido-unificado/
   (son texto libre y riesgoso). Aparecen en una sección aparte para que las sumes vos.
 - **Facturación bruta** = suma de los *subtotales* (antes de promociones). También se
   muestra el total cobrado (después de promos).
-# pedido_unificado
