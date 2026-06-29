@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Pedido Unificado a Fábrica</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="aggregate.js"></script>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --txt:#e8eaed; --muted:#9aa3b2; --accent:#5b8cff; --accent2:#3ad29f;
+    --warn:#ffb454; --danger:#ff6b6b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+    background:var(--bg);color:var(--txt);}
+  header{padding:18px 22px;border-bottom:1px solid var(--line);display:flex;
+    align-items:center;gap:12px}
+  header h1{font-size:18px;margin:0;font-weight:650}
+  header .sub{color:var(--muted);font-size:13px}
+  .wrap{max-width:1000px;margin:0 auto;padding:22px}
+  .chat{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:18px;min-height:120px}
+  .msg{margin:10px 0;display:flex;gap:10px;align-items:flex-start}
+  .msg .who{font-size:12px;color:var(--muted);min-width:54px;padding-top:3px}
+  .bubble{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+    padding:10px 14px;font-size:14px;line-height:1.5;max-width:100%}
+  .drop{border:2px dashed var(--line);border-radius:14px;padding:34px;text-align:center;
+    color:var(--muted);cursor:pointer;transition:.15s;margin-top:14px}
+  .drop.over{border-color:var(--accent);background:rgba(91,140,255,.06);color:var(--txt)}
+  .drop strong{color:var(--txt)}
+  .files{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+  .chip{background:var(--panel2);border:1px solid var(--line);border-radius:20px;
+    padding:6px 12px;font-size:13px;display:flex;align-items:center;gap:8px}
+  .chip button{background:none;border:none;color:var(--muted);cursor:pointer;font-size:15px}
+  .row{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
+  button.btn{background:var(--accent);color:#fff;border:none;border-radius:10px;
+    padding:11px 18px;font-size:14px;font-weight:600;cursor:pointer}
+  button.btn:disabled{opacity:.45;cursor:not-allowed}
+  button.ghost{background:transparent;border:1px solid var(--line);color:var(--txt)}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-top:18px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .card .k{color:var(--muted);font-size:12px}
+  .card .v{font-size:24px;font-weight:700;margin-top:4px}
+  .card .v.green{color:var(--accent2)}
+  .card .v.blue{color:var(--accent)}
+  table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13.5px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.3px}
+  td.num,th.num{text-align:right}
+  tbody tr:hover{background:var(--panel2)}
+  .section{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:18px;margin-top:18px}
+  .section h2{font-size:15px;margin:0 0 6px}
+  .badge{font-size:11px;background:var(--panel2);border:1px solid var(--line);
+    border-radius:6px;padding:1px 7px;color:var(--muted)}
+  .note{background:rgba(255,180,84,.08);border:1px solid rgba(255,180,84,.3);
+    border-radius:10px;padding:10px 14px;margin-top:8px;font-size:13.5px}
+  .note b{color:var(--warn)}
+  .err{background:rgba(255,107,107,.08);border:1px solid rgba(255,107,107,.3);
+    border-radius:10px;padding:10px 14px;margin-top:8px;font-size:13.5px;color:#ffd0d0}
+  .hidden{display:none}
+  .spin{display:inline-block;width:15px;height:15px;border:2px solid var(--line);
+    border-top-color:var(--accent);border-radius:50%;animation:s 0.7s linear infinite;vertical-align:-2px}
+  @keyframes s{to{transform:rotate(360deg)}}
+  .muted{color:var(--muted)}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<header>
+  <span style="font-size:22px">🏭</span>
+  <div>
+    <h1>Pedido Unificado a Fábrica</h1>
+    <div class="sub">Subí tus PDFs de órdenes → uno los pedidos por producto y variante → exportás el pedido único.</div>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="chat" id="chat">
+    <div class="msg">
+      <div class="who">Asistente</div>
+      <div class="bubble">¡Hola Facu! Soltá acá todos los PDFs de las órdenes (podés arrastrar varios juntos). Cuando estén cargados, tocá <b>Unificar pedidos</b> y te armo el pedido único para la fábrica más la facturación total.</div>
+    </div>
+  </div>
+
+  <div class="drop" id="drop">
+    <div style="font-size:30px">📄⬆️</div>
+    <div style="margin-top:8px"><strong>Arrastrá los PDFs acá</strong> o hacé clic para elegirlos</div>
+    <div style="font-size:12px;margin-top:4px" class="muted">Podés subir varios a la vez</div>
+    <input type="file" id="file" accept="application/pdf" multiple class="hidden" />
+  </div>
+
+  <div class="files" id="files"></div>
+
+  <div class="row">
+    <button class="btn" id="go" disabled>Unificar pedidos</button>
+    <button class="btn ghost" id="clear" disabled>Limpiar</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="result"></div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+let selected = []; // {name, file}
+let lastAgg = null;
+
+const drop = $("#drop"), fileInput = $("#file");
+drop.addEventListener("click", () => fileInput.click());
+drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", (e) => {
+  e.preventDefault(); drop.classList.remove("over");
+  addFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener("change", (e) => addFiles(e.target.files));
+
+function addFiles(list) {
+  for (const f of list) {
+    if (f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf")) {
+      if (!selected.some((s) => s.name === f.name && s.file.size === f.size))
+        selected.push({ name: f.name, file: f });
+    }
+  }
+  renderFiles();
+}
+
+function renderFiles() {
+  const c = $("#files"); c.innerHTML = "";
+  selected.forEach((s, i) => {
+    const chip = document.createElement("div");
+    chip.className = "chip";
+    chip.innerHTML = `📄 ${s.name} <button title="Quitar">✕</button>`;
+    chip.querySelector("button").onclick = () => { selected.splice(i, 1); renderFiles(); };
+    c.appendChild(chip);
+  });
+  $("#go").disabled = selected.length === 0;
+  $("#clear").disabled = selected.length === 0;
+}
+
+$("#clear").onclick = () => {
+  selected = []; renderFiles(); $("#result").innerHTML = ""; $("#status").innerHTML = "";
+  fileInput.value = "";
+};
+
+function toBase64(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result).split(",")[1]);
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+}
+
+function addMsg(text) {
+  const m = document.createElement("div");
+  m.className = "msg";
+  m.innerHTML = `<div class="who">Asistente</div><div class="bubble">${text}</div>`;
+  $("#chat").appendChild(m);
+}
+
+$("#go").onclick = async () => {
+  $("#go").disabled = true; $("#clear").disabled = true;
+  $("#status").innerHTML = `<div class="note"><span class="spin"></span> Leyendo ${selected.length} PDF(s) con IA… esto puede tardar unos segundos.</div>`;
+  $("#result").innerHTML = "";
+  try {
+    const files = [];
+    for (const s of selected) files.push({ name: s.name, dataBase64: await toBase64(s.file) });
+
+    const resp = await fetch("/api/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ files })
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || "Error del servidor");
+
+    const agg = PedidoAgg.aggregate(data.orders || []);
+    lastAgg = agg;
+    render(agg, data.errors || [], (data.orders || []).length);
+    $("#status").innerHTML = "";
+  } catch (e) {
+    $("#status").innerHTML = `<div class="err">⚠️ ${e.message}</div>`;
+  } finally {
+    $("#go").disabled = selected.length === 0;
+    $("#clear").disabled = selected.length === 0;
+  }
+};
+
+function render(agg, errors, nOrders) {
+  const f = PedidoAgg.formatARS;
+  let html = "";
+
+  addMsg(`Listo ✅ Uní <b>${nOrders}</b> orden(es) en <b>${agg.lineas.length}</b> productos distintos, <b>${agg.totalUnidades}</b> unidades en total.`);
+
+  html += `<div class="cards">
+    <div class="card"><div class="k">Órdenes procesadas</div><div class="v">${nOrders}</div></div>
+    <div class="card"><div class="k">Productos distintos</div><div class="v">${agg.lineas.length}</div></div>
+    <div class="card"><div class="k">Unidades totales</div><div class="v blue">${agg.totalUnidades}</div></div>
+    <div class="card"><div class="k">Facturación bruta (subtotal)</div><div class="v green">${f(agg.facturacionBruta)}</div></div>
+  </div>`;
+
+  if (agg.totalPromos > 0) {
+    html += `<div class="cards" style="margin-top:12px">
+      <div class="card"><div class="k">Promociones aplicadas</div><div class="v">- ${f(agg.totalPromos)}</div></div>
+      <div class="card"><div class="k">Facturación neta (total cobrado)</div><div class="v">${f(agg.facturacionTotal)}</div></div>
+    </div>`;
+  }
+
+  // Tabla pedido unificado
+  html += `<div class="section">
+    <h2>📦 Pedido único para la fábrica</h2>
+    <div class="muted" style="font-size:12.5px;margin-bottom:6px">Sumado por producto + variante.</div>
+    <table><thead><tr>
+      <th>Producto</th><th>Variante</th><th>SKU</th>
+      <th class="num">Cant. total</th>
+    </tr></thead><tbody>`;
+  agg.lineas.forEach((l) => {
+    html += `<tr>
+      <td>${esc(l.producto)}</td>
+      <td>${esc(l.variante) || '<span class="muted">—</span>'}</td>
+      <td><span class="badge">${esc(l.sku) || "—"}</span></td>
+      <td class="num"><b>${l.cantidad}</b></td>
+    </tr>`;
+  });
+  html += `<tr><td colspan="3" style="text-align:right;font-weight:600">TOTAL UNIDADES</td>
+    <td class="num"><b>${agg.totalUnidades}</b></td></tr>`;
+  html += `</tbody></table>
+    <div class="row"><button class="btn" onclick="exportPDF()">⬇️ Exportar pedido en PDF</button>
+    <button class="btn ghost" onclick="exportCSV()">Exportar CSV</button></div>
+  </div>`;
+
+  // Detalle de facturación por orden
+  html += `<div class="section">
+    <h2>🧾 Facturación por orden</h2>
+    <table><thead><tr><th>Orden</th><th>Cliente</th><th>Fecha</th>
+      <th class="num">Subtotal (bruto)</th><th class="num">Total cobrado</th></tr></thead><tbody>`;
+  agg.ordenes.forEach((o) => {
+    html += `<tr><td>#${esc(o.numeroOrden)}</td><td>${esc(o.cliente)}</td><td>${esc(o.fecha)}</td>
+      <td class="num">${f(o.subtotal)}</td><td class="num">${f(o.total)}</td></tr>`;
+  });
+  html += `<tr><td colspan="3" style="text-align:right;font-weight:600">TOTALES</td>
+    <td class="num"><b>${f(agg.facturacionBruta)}</b></td>
+    <td class="num"><b>${f(agg.facturacionTotal)}</b></td></tr>`;
+  html += `</tbody></table></div>`;
+
+  // Notas (revisión manual)
+  if (agg.notas.length) {
+    html += `<div class="section"><h2>📝 Notas de pedido — revisar a mano</h2>
+      <div class="muted" style="font-size:12.5px">Estos pedidos tienen notas que pueden incluir productos extra NO sumados arriba. Revisalos:</div>`;
+    agg.notas.forEach((n) => {
+      html += `<div class="note"><b>Orden #${esc(n.numeroOrden)}</b> ${esc(n.cliente)}: ${esc(n.texto)}</div>`;
+    });
+    html += `</div>`;
+  }
+
+  // Errores
+  if (errors.length) {
+    html += `<div class="section"><h2>⚠️ No se pudieron leer</h2>`;
+    errors.forEach((e) => { html += `<div class="err">${esc(e.archivo)}: ${esc(e.error)}</div>`; });
+    html += `</div>`;
+  }
+
+  $("#result").innerHTML = html;
+}
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+window.exportCSV = function () {
+  if (!lastAgg) return;
+  let rows = [["Producto", "Variante", "SKU", "Cantidad"]];
+  lastAgg.lineas.forEach((l) => rows.push([l.producto, l.variante, l.sku, l.cantidad]));
+  rows.push(["TOTAL", "", "", lastAgg.totalUnidades]);
+  const csv = rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "pedido-unificado.csv";
+  a.click();
+};
+
+window.exportPDF = function () {
+  if (!lastAgg) return;
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const f = PedidoAgg.formatARS;
+  const today = new Date().toLocaleDateString("es-AR");
+
+  doc.setFontSize(16); doc.text("Pedido único para la fábrica", 14, 18);
+  doc.setFontSize(10); doc.setTextColor(110);
+  doc.text(`Fecha: ${today}  ·  Órdenes: ${lastAgg.ordenes.length}  ·  Unidades: ${lastAgg.totalUnidades}`, 14, 25);
+  doc.setTextColor(0);
+
+  doc.autoTable({
+    startY: 30,
+    head: [["Producto", "Variante", "SKU", "Cantidad"]],
+    body: lastAgg.lineas.map((l) => [l.producto, l.variante || "—", l.sku || "—", String(l.cantidad)]),
+    foot: [["", "", "TOTAL", String(lastAgg.totalUnidades)]],
+    styles: { fontSize: 9 },
+    headStyles: { fillColor: [91, 140, 255] },
+    footStyles: { fillColor: [230, 235, 245], textColor: 20, fontStyle: "bold" },
+    columnStyles: { 3: { halign: "right" } }
+  });
+
+  let y = doc.lastAutoTable.finalY + 12;
+  doc.setFontSize(12); doc.text("Facturación", 14, y);
+  doc.autoTable({
+    startY: y + 4,
+    head: [["Concepto", "Monto"]],
+    body: [
+      ["Facturación bruta (suma de subtotales)", f(lastAgg.facturacionBruta)],
+      ["Promociones aplicadas", "- " + f(lastAgg.totalPromos)],
+      ["Total cobrado", f(lastAgg.facturacionTotal)]
+    ],
+    styles: { fontSize: 9 },
+    headStyles: { fillColor: [58, 210, 159] },
+    columnStyles: { 1: { halign: "right" } }
+  });
+
+  doc.save("pedido-unificado.pdf");
+};
+</script>
+</body>
+</html>

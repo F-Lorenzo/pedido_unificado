@@ -1,0 +1,10 @@
+{
+  "name": "pedido-unificado",
+  "version": "1.0.0",
+  "description": "Sube PDFs de ordenes, unifica pedidos por producto+variante y suma la facturacion. Usa Google Gemini (capa gratuita).",
+  "private": true,
+  "scripts": {
+    "deploy": "vercel --prod"
+  },
+  "engines": { "node": ">=18" }
+}
