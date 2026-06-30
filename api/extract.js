@@ -81,10 +81,10 @@ async function callGroq(apiKey, text, attempt = 1) {
     body: JSON.stringify(payload)
   });
 
-  if (resp.status === 429 && attempt < 4) {
+  if (resp.status === 429 && attempt < 3) {
     const txt = await resp.text();
     const m = txt.match(/try again in ([\d.]+)s/i);
-    const waitMs = m ? Math.ceil(parseFloat(m[1]) * 1000) + 500 : 5000 * attempt;
+    const waitMs = Math.min(m ? Math.ceil(parseFloat(m[1]) * 1000) + 500 : 5000 * attempt, 45000);
     await sleep(waitMs);
     return callGroq(apiKey, text, attempt + 1);
   }
