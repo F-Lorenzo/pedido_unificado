@@ -39,6 +39,10 @@ REGLAS IMPORTANTES:
 - Los precios argentinos usan punto para miles y coma para decimales: "$2.500,00" = 2500. "$331.000,00" = 331000.
 - Separa SIEMPRE la variante (lo que esta entre parentesis en la descripcion) del nombre base del producto.
 - El mismo SKU puede repetirse para distintas variantes: tratalas como items distintos igual.
+- Si un item pide una variante "surtida"/"surtido" (mezcla de fragancias sin especificar
+  cual, en vez de una fragancia puntual), usa "SURTIDO" como variante (en MAYUSCULAS).
+  NUNCA la omitas, NUNCA la mandes a "notas" ni la ignores: debe aparecer como item
+  normal en la tabla final, igual que cualquier otra variante.
 - No inventes items. Solo los que aparezcan en la tabla 'Detalle del pedido'.
 - NO sumes a los items lo que diga en 'Notas del pedido'. Eso va solo en el campo "notas".
 - Si un valor no esta, usa null (o "" para strings de item).
@@ -86,6 +90,11 @@ REGLAS IMPORTANTES:
   y el nombre (el resto, sin el numero ni separadores como "-").
 - Si una linea trae una aclaracion entre parentesis (ej "13 surtidas (no Saiba)"),
   conservala como parte del nombre de la variante.
+- Si una linea pide una variante "surtida"/"surtido"/"surtidos" (mezcla de fragancias
+  sin especificar cual, ej "13 surtidas (no Saiba)"), usa "SURTIDO" como base de la
+  variante (en MAYUSCULAS), agregando la aclaracion si la hay (ej "SURTIDO (NO SAIBA)").
+  NUNCA la omitas, NUNCA la mandes a "notas": debe aparecer como item normal en la
+  tabla final igual que cualquier otro aroma.
 - Validacion: si la suma de las cantidades de una subcategoria NO coincide con el
   total declarado al principio para esa categoria, anotalo en "notas" en lenguaje
   simple (ej "Textiles: declarado 35, sumado 34, revisar a mano").

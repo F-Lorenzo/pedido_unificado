@@ -120,6 +120,10 @@ pedido-unificado/
   exacto, decime cuáles y agrego esa equivalencia al prompt.
 - **Variantes:** se separan por lo que va entre paréntesis en la descripción
   (CITRUS, PHANTOM, etc.). El mismo SKU en distintas variantes se trata por separado.
+- **Pedidos de "surtido":** si un cliente pide una variante "surtida"/"surtido"
+  (mezcla sin especificar fragancia, en un PDF o en un pedido escrito), aparece en el
+  pedido único como su propia línea con variante **SURTIDO** — no se omite ni se manda
+  a notas, se cuenta como cualquier otro aroma.
 - **Notas del pedido:** cosas como "+ 8 esencias del pedido anterior" NO se suman solas
   (son texto libre y riesgoso). Aparecen en una sección aparte para que las sumes vos.
 - **Facturación bruta** = suma de los *subtotales* (antes de promociones). También se
