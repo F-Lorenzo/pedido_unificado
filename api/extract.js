@@ -102,13 +102,13 @@ async function callGemini(apiKey, text, attempt = 1) {
   if (!resp.ok) {
     const txt = await resp.text();
     const retryable = resp.status === 429 || resp.status === 503;
-    if (retryable && attempt < 4) {
+    if (retryable && attempt < 5) {
       // Los errores de cuota de Google suelen traer un "retryDelay":"Xs"
       // en el detalle; si no viene, usamos backoff creciente.
       const m = txt.match(/retryDelay["\s:]+(\d+(?:\.\d+)?)s/i) || txt.match(/try again in ([\d.]+)s/i);
       const waitMs = m
-        ? Math.min(Math.ceil(parseFloat(m[1]) * 1000) + 500, 20000)
-        : Math.min(3000 * 2 ** (attempt - 1), 15000);
+        ? Math.min(Math.ceil(parseFloat(m[1]) * 1000) + 500, 25000)
+        : Math.min(4000 * 2 ** (attempt - 1), 20000);
       await sleep(waitMs);
       return callGemini(apiKey, text, attempt + 1);
     }

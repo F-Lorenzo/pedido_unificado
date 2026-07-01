@@ -100,13 +100,14 @@ pedido-unificado/
 - **Facturación bruta** = suma de los *subtotales* (antes de promociones). También se
   muestra el total cobrado (después de promos).
 - **Procesamiento de a uno:** cada PDF se manda en su propio request, en orden,
-  sin trabajo en paralelo, con una pausa de ~4.2s entre archivo y archivo
+  sin trabajo en paralelo, con una pausa de ~6s entre archivo y archivo
   (`PACING_DELAY_MS` en `public/index.html`) para que tandas grandes terminen
   sin cortarse por el rate limit gratuito de Gemini (~15 solicitudes/minuto
-  para Flash-Lite). Si igual llega a pasar, el backend reintenta
-  automáticamente respetando el tiempo de espera que indica la API. La web
-  muestra un tiempo estimado restante (arranca en ~10s por PDF y se ajusta
-  con el promedio real a medida que van terminando).
+  para Flash-Lite) o por sobrecarga momentánea del lado de Google. Si igual
+  llega a pasar, el backend reintenta automáticamente (hasta 5 intentos)
+  respetando el tiempo de espera que indica la API. La web muestra un tiempo
+  estimado restante (arranca en ~13s por PDF y se ajusta con el promedio real
+  a medida que van terminando).
 - **Si un PDF falla:** no frena a los demás. Queda listado aparte en
   "⚠️ No se pudieron leer" con el motivo en lenguaje simple y neutro (sin
   exponer detalles internos como el proveedor de IA o sus límites), y solo
