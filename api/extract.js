@@ -1,12 +1,15 @@
 // Serverless function (Vercel) — recibe PDFs en base64, extrae el texto
-// localmente (pdf-parse) y usa Groq (capa gratuita) para estructurarlo en JSON.
+// localmente (pdf-parse) y usa DeepSeek V4 Pro (servido via NVIDIA NIM) para
+// estructurarlo en JSON.
 //
 // La API key NUNCA se expone al navegador: vive solo aca, en el servidor,
-// leida desde la variable de entorno GROQ_API_KEY.
+// leida desde la variable de entorno NVIDIA_API_KEY.
 
 import pdfParse from "pdf-parse";
 
-const MODEL = "llama-3.3-70b-versatile"; // gratis en Groq, buena calidad para extraccion JSON
+const MODEL = "deepseek-ai/deepseek-v4-pro";
+const API_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
+const CONCURRENCY = 5; // ordenes procesadas en paralelo contra la API (permite tandas grandes, ej. 40 PDFs, sin ir una por una)
 
 // Prompt que le explica al modelo el formato exacto de estos pedidos.
 const PROMPT = `Sos un extractor de datos de ordenes de compra de una tienda.
@@ -61,18 +64,21 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function callGroq(apiKey, text, attempt = 1) {
-  const url = "https://api.groq.com/openai/v1/chat/completions";
+async function callDeepSeek(apiKey, text, attempt = 1) {
   const payload = {
     model: MODEL,
-    temperature: 0,
-    response_format: { type: "json_object" },
     messages: [
       { role: "user", content: PROMPT + text }
-    ]
+    ],
+    temperature: 0,
+    top_p: 0.95,
+    max_tokens: 16384, // de sobra para el JSON de una orden; asi cada request corta lo antes posible
+    chat_template_kwargs: { thinking: false },
+    response_format: { type: "json_object" },
+    stream: false
   };
 
-  const resp = await fetch(url, {
+  const resp = await fetch(API_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -81,17 +87,15 @@ async function callGroq(apiKey, text, attempt = 1) {
     body: JSON.stringify(payload)
   });
 
-  if (resp.status === 429 && attempt < 3) {
-    const txt = await resp.text();
-    const m = txt.match(/try again in ([\d.]+)s/i);
-    const waitMs = Math.min(m ? Math.ceil(parseFloat(m[1]) * 1000) + 500 : 5000 * attempt, 45000);
+  if ((resp.status === 429 || resp.status === 503) && attempt < 4) {
+    const waitMs = Math.min(1500 * 2 ** (attempt - 1), 20000);
     await sleep(waitMs);
-    return callGroq(apiKey, text, attempt + 1);
+    return callDeepSeek(apiKey, text, attempt + 1);
   }
 
   if (!resp.ok) {
     const txt = await resp.text();
-    throw new Error(`Groq ${resp.status}: ${txt.slice(0, 500)}`);
+    throw new Error(`DeepSeek ${resp.status}: ${txt.slice(0, 500)}`);
   }
 
   return resp.json();
@@ -101,7 +105,7 @@ async function extractOne(apiKey, file) {
   const pdfBuffer = Buffer.from(file.dataBase64, "base64");
   const { text } = await pdfParse(pdfBuffer);
 
-  const json = await callGroq(apiKey, text);
+  const json = await callDeepSeek(apiKey, text);
   const content = json?.choices?.[0]?.message?.content || "";
   let parsed;
   try {
@@ -116,15 +120,29 @@ async function extractOne(apiKey, file) {
   return parsed;
 }
 
+// Corre `worker` sobre `items` con hasta `limit` en simultaneo, sin depender
+// de librerias externas (asi el pool de concurrencia procesa 40 PDFs en
+// paralelo en vez de uno por uno).
+async function runWithConcurrency(items, limit, worker) {
+  let next = 0;
+  async function runNext() {
+    const i = next++;
+    if (i >= items.length) return;
+    await worker(items[i], i);
+    return runNext();
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, runNext));
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Usa POST" });
     return;
   }
 
-  const apiKey = process.env.GROQ_API_KEY;
+  const apiKey = process.env.NVIDIA_API_KEY;
   if (!apiKey) {
-    res.status(500).json({ error: "Falta GROQ_API_KEY en el servidor. Cargala en Vercel -> Settings -> Environment Variables." });
+    res.status(500).json({ error: "Falta NVIDIA_API_KEY en el servidor. Cargala en Vercel -> Settings -> Environment Variables." });
     return;
   }
 
@@ -140,15 +158,15 @@ export default async function handler(req, res) {
 
   const orders = [];
   const errors = [];
-  // procesamos de a uno para no pasarnos del rate limit de la capa gratuita
-  for (const f of files) {
+
+  await runWithConcurrency(files, CONCURRENCY, async (f) => {
     try {
       const o = await extractOne(apiKey, f);
       orders.push(o);
     } catch (e) {
       errors.push({ archivo: f.name, error: String(e.message || e) });
     }
-  }
+  });
 
   res.status(200).json({ orders, errors });
 }
