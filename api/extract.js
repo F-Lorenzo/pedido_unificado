@@ -87,14 +87,18 @@ async function callDeepSeek(apiKey, text, attempt = 1) {
     body: JSON.stringify(payload)
   });
 
-  if ((resp.status === 429 || resp.status === 503) && attempt < 4) {
-    const waitMs = Math.min(1500 * 2 ** (attempt - 1), 20000);
-    await sleep(waitMs);
-    return callDeepSeek(apiKey, text, attempt + 1);
-  }
-
   if (!resp.ok) {
     const txt = await resp.text();
+    // NVIDIA NIM devuelve 429/503 por sobrecarga, y a veces un 400 con
+    // "DEGRADED function cannot be invoked" cuando la replica del modelo
+    // esta temporalmente caida de su lado: en los tres casos conviene
+    // reintentar en vez de descartar el PDF.
+    const retryable = resp.status === 429 || resp.status === 503 || /DEGRADED/i.test(txt);
+    if (retryable && attempt < 5) {
+      const waitMs = Math.min(2000 * 2 ** (attempt - 1), 20000);
+      await sleep(waitMs);
+      return callDeepSeek(apiKey, text, attempt + 1);
+    }
     throw new Error(`DeepSeek ${resp.status}: ${txt.slice(0, 500)}`);
   }
 
