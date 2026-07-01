@@ -74,7 +74,7 @@
   <span style="font-size:22px">🏭</span>
   <div>
     <h1>Pedido Unificado a Fábrica</h1>
-    <div class="sub">Subí tus PDFs de órdenes (podés subir hasta ~40 de una sola vez, se procesan en paralelo) → sumalos al pedido acumulado o armá uno nuevo → exportás el pedido único.</div>
+    <div class="sub">Subí tus PDFs de órdenes (podés soltar varios juntos, se procesan uno por uno) → sumalos al pedido acumulado o armá uno nuevo → exportás el pedido único.</div>
   </div>
 </header>
 
@@ -82,7 +82,7 @@
   <div class="chat" id="chat">
     <div class="msg">
       <div class="who">Asistente</div>
-      <div class="bubble">¡Hola Facu! Soltá acá los PDFs de las órdenes (podés subir hasta unos 40 de una sola vez, los proceso en paralelo). Con <b>Armar pedido nuevo</b> empezás de cero; con <b>Sumar al pedido actual</b> agregás más órdenes a lo que ya tenías acumulado. Cuando quieras volver a cero, usá <b>Vaciar pedido acumulado</b>.</div>
+      <div class="bubble">¡Hola Facu! Soltá acá los PDFs de las órdenes (los proceso de a uno, así si alguno falla no afecta a los demás). Con <b>Armar pedido nuevo</b> empezás de cero; con <b>Sumar al pedido actual</b> agregás más órdenes a lo que ya tenías acumulado. Cuando quieras volver a cero, usá <b>Vaciar pedido acumulado</b>.</div>
     </div>
   </div>
 
@@ -112,8 +112,6 @@ let selected = []; // {name, file}
 let lastAgg = null;
 let allOrders = []; // pedidos ya extraidos, acumulados entre tandas
 let allErrors = [];
-const MAX_REQUEST_BYTES = 3.5 * 1024 * 1024; // margen bajo el limite de ~4.5MB por request de Vercel
-const CLIENT_CONCURRENCY = 3; // requests en simultaneo desde el navegador
 
 const drop = $("#drop"), fileInput = $("#file");
 drop.addEventListener("click", () => fileInput.click());
@@ -175,26 +173,6 @@ function addMsg(text) {
   $("#chat").appendChild(m);
 }
 
-// Agrupa por tamaño (no por cantidad fija) para no pasarnos del limite de
-// payload de Vercel, aunque se suban 40 PDFs de una sola vez.
-function chunkBySize(list) {
-  const out = [];
-  let cur = [];
-  let curBytes = 0;
-  for (const s of list) {
-    const approxBytes = s.file.size * 1.37; // overhead de base64 + JSON
-    if (cur.length && curBytes + approxBytes > MAX_REQUEST_BYTES) {
-      out.push(cur);
-      cur = [];
-      curBytes = 0;
-    }
-    cur.push(s);
-    curBytes += approxBytes;
-  }
-  if (cur.length) out.push(cur);
-  return out;
-}
-
 function setButtonsDisabled(disabled) {
   $("#goSum").disabled = disabled || selected.length === 0;
   $("#goNew").disabled = disabled || selected.length === 0;
@@ -210,40 +188,29 @@ async function procesar(modo) {
 
   if (modo === "nuevo") { allOrders = []; allErrors = []; }
 
-  const batches = chunkBySize(selected);
   const nuevasOrdenes = [];
   const nuevosErrores = [];
-  let procesados = 0;
-
-  async function runBatch(batch) {
-    const files = [];
-    for (const s of batch) files.push({ name: s.name, dataBase64: await toBase64(s.file) });
-
-    const resp = await fetch("/api/extract", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ files })
-    });
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || "Error del servidor");
-
-    nuevasOrdenes.push(...(data.orders || []));
-    nuevosErrores.push(...(data.errors || []));
-    procesados += batch.length;
-    $("#status").innerHTML = `<div class="note"><span class="spin"></span> Procesando… ${procesados}/${selected.length} PDF(s)</div>`;
-  }
 
   try {
-    $("#status").innerHTML = `<div class="note"><span class="spin"></span> Procesando… 0/${selected.length} PDF(s)</div>`;
+    // Uno por uno, en orden: mas lento que en paralelo pero predecible, y si
+    // un PDF falla no afecta a los demas (solo queda marcado para volver a
+    // subirlo, el resto sigue procesandose).
+    for (let i = 0; i < selected.length; i++) {
+      const s = selected[i];
+      $("#status").innerHTML = `<div class="note"><span class="spin"></span> Procesando ${i + 1}/${selected.length}: ${esc(s.name)}…</div>`;
 
-    let next = 0;
-    async function worker() {
-      while (next < batches.length) {
-        const batch = batches[next++];
-        await runBatch(batch);
-      }
+      const files = [{ name: s.name, dataBase64: await toBase64(s.file) }];
+      const resp = await fetch("/api/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files })
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "Error del servidor");
+
+      nuevasOrdenes.push(...(data.orders || []));
+      nuevosErrores.push(...(data.errors || []));
     }
-    await Promise.all(Array.from({ length: Math.min(CLIENT_CONCURRENCY, batches.length) }, worker));
 
     allOrders.push(...nuevasOrdenes);
     allErrors.push(...nuevosErrores);
@@ -338,8 +305,9 @@ function render(agg, errors, nOrders, info) {
 
   // Errores
   if (errors.length) {
-    html += `<div class="section"><h2>⚠️ No se pudieron leer</h2>`;
-    errors.forEach((e) => { html += `<div class="err">${esc(e.archivo)}: ${esc(e.error)}</div>`; });
+    html += `<div class="section"><h2>⚠️ No se pudieron leer (${errors.length})</h2>
+      <div class="muted" style="font-size:12.5px;margin-bottom:6px">Volvé a soltar estos archivos en la zona de arriba para reintentarlos.</div>`;
+    errors.forEach((e) => { html += `<div class="err"><b>${esc(e.archivo)}</b>: ${esc(e.error)}</div>`; });
     html += `</div>`;
   }
 

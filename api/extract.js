@@ -9,7 +9,6 @@ import pdfParse from "pdf-parse";
 
 const MODEL = "deepseek-ai/deepseek-v4-pro";
 const API_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
-const CONCURRENCY = 5; // ordenes procesadas en paralelo contra la API (permite tandas grandes, ej. 40 PDFs, sin ir una por una)
 
 // Prompt que le explica al modelo el formato exacto de estos pedidos.
 const PROMPT = `Sos un extractor de datos de ordenes de compra de una tienda.
@@ -64,6 +63,23 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Convierte errores tecnicos de la API en un mensaje que cualquiera pueda
+// entender (se muestra tal cual en la web, sin JSON ni codigos de status).
+function friendlyApiError(status, rawText) {
+  if (status === 429) return "El servicio de IA está recibiendo demasiadas solicitudes en este momento.";
+  if (status === 503) return "El servicio de IA no está disponible en este momento.";
+  if (status === 400 && /DEGRADED/i.test(rawText)) return "El servicio de IA tuvo un problema temporal para leer este archivo.";
+  if (status === 401 || status === 403) return "No se pudo autenticar con el servicio de IA (revisar la API key configurada en Vercel).";
+  if (status >= 500) return "El servicio de IA tuvo un error interno.";
+  return "El servicio de IA no pudo procesar este archivo.";
+}
+
+function apiError(status, rawText) {
+  const err = new Error(friendlyApiError(status, rawText));
+  err.technicalDetail = `DeepSeek ${status}: ${rawText.slice(0, 500)}`;
+  return err;
+}
+
 async function callDeepSeek(apiKey, text, attempt = 1) {
   const payload = {
     model: MODEL,
@@ -91,23 +107,30 @@ async function callDeepSeek(apiKey, text, attempt = 1) {
     const txt = await resp.text();
     // NVIDIA NIM devuelve 429/503 por sobrecarga, y a veces un 400 con
     // "DEGRADED function cannot be invoked" cuando la replica del modelo
-    // esta temporalmente caida de su lado: en los tres casos conviene
-    // reintentar en vez de descartar el PDF.
+    // esta temporalmente caida de su lado: reintentamos un par de veces
+    // nada mas (ya no hay carga concurrente, no deberia tardar mucho).
     const retryable = resp.status === 429 || resp.status === 503 || /DEGRADED/i.test(txt);
-    if (retryable && attempt < 5) {
-      const waitMs = Math.min(2000 * 2 ** (attempt - 1), 20000);
+    if (retryable && attempt < 3) {
+      const waitMs = Math.min(2000 * 2 ** (attempt - 1), 8000);
       await sleep(waitMs);
       return callDeepSeek(apiKey, text, attempt + 1);
     }
-    throw new Error(`DeepSeek ${resp.status}: ${txt.slice(0, 500)}`);
+    throw apiError(resp.status, txt);
   }
 
   return resp.json();
 }
 
 async function extractOne(apiKey, file) {
-  const pdfBuffer = Buffer.from(file.dataBase64, "base64");
-  const { text } = await pdfParse(pdfBuffer);
+  let text;
+  try {
+    const pdfBuffer = Buffer.from(file.dataBase64, "base64");
+    ({ text } = await pdfParse(pdfBuffer));
+  } catch (e) {
+    const err = new Error("El archivo no parece ser un PDF válido o está dañado.");
+    err.technicalDetail = String(e.message || e);
+    throw err;
+  }
 
   const json = await callDeepSeek(apiKey, text);
   const content = json?.choices?.[0]?.message?.content || "";
@@ -117,25 +140,21 @@ async function extractOne(apiKey, file) {
   } catch (e) {
     // por las dudas, intento rescatar el primer bloque {...}
     const m = content.match(/\{[\s\S]*\}/);
-    if (!m) throw new Error("El modelo no devolvio JSON valido para " + file.name);
-    parsed = JSON.parse(m[0]);
+    if (!m) {
+      const err = new Error("El servicio de IA no devolvió una respuesta que se pudiera leer para este archivo.");
+      err.technicalDetail = "Respuesta sin JSON: " + content.slice(0, 300);
+      throw err;
+    }
+    try {
+      parsed = JSON.parse(m[0]);
+    } catch (e2) {
+      const err = new Error("El servicio de IA no devolvió una respuesta que se pudiera leer para este archivo.");
+      err.technicalDetail = "JSON invalido: " + content.slice(0, 300);
+      throw err;
+    }
   }
   parsed.archivo = file.name;
   return parsed;
-}
-
-// Corre `worker` sobre `items` con hasta `limit` en simultaneo, sin depender
-// de librerias externas (asi el pool de concurrencia procesa 40 PDFs en
-// paralelo en vez de uno por uno).
-async function runWithConcurrency(items, limit, worker) {
-  let next = 0;
-  async function runNext() {
-    const i = next++;
-    if (i >= items.length) return;
-    await worker(items[i], i);
-    return runNext();
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, runNext));
 }
 
 export default async function handler(req, res) {
@@ -163,14 +182,18 @@ export default async function handler(req, res) {
   const orders = [];
   const errors = [];
 
-  await runWithConcurrency(files, CONCURRENCY, async (f) => {
+  // De a uno, sin concurrencia: mas predecible y mas facil de leer para el
+  // usuario que ver varios PDFs "colgados" en simultaneo.
+  for (const f of files) {
     try {
       const o = await extractOne(apiKey, f);
       orders.push(o);
     } catch (e) {
-      errors.push({ archivo: f.name, error: String(e.message || e) });
+      if (e.technicalDetail) console.error(`Error procesando ${f.name}: ${e.technicalDetail}`);
+      const msg = e.message || "No se pudo procesar este archivo.";
+      errors.push({ archivo: f.name, error: `${msg} Volvé a subirlo manualmente.` });
     }
-  });
+  }
 
   res.status(200).json({ orders, errors });
 }
