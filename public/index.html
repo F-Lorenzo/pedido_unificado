@@ -74,7 +74,7 @@
   <span style="font-size:22px">🏭</span>
   <div>
     <h1>Pedido Unificado a Fábrica</h1>
-    <div class="sub">Subí tus PDFs de órdenes (podés soltar varios juntos, se procesan uno por uno) → sumalos al pedido acumulado o armá uno nuevo → exportás el pedido único.</div>
+    <div class="sub">Subí tus PDFs de órdenes o pegá pedidos escritos (WhatsApp, papel) → se procesan uno por uno y se unifican en un solo pedido → exportás el pedido único.</div>
   </div>
 </header>
 
@@ -82,7 +82,7 @@
   <div class="chat" id="chat">
     <div class="msg">
       <div class="who">Asistente</div>
-      <div class="bubble">¡Hola Facu! Soltá acá los PDFs de las órdenes (los proceso de a uno, con una pequeña pausa entre cada uno para que la tanda completa termine sin cortarse). Con <b>Armar pedido nuevo</b> empezás de cero; con <b>Sumar al pedido actual</b> agregás más órdenes a lo que ya tenías acumulado. Cuando quieras volver a cero, usá <b>Vaciar pedido acumulado</b>.</div>
+      <div class="bubble">¡Hola Facu! Soltá acá los PDFs de las órdenes, y si tenés pedidos escritos a mano o por WhatsApp pegalos en el cuadro de texto de abajo — ambos se suman al mismo pedido único. Con <b>Armar pedido nuevo</b> empezás de cero; con <b>Sumar al pedido actual</b> agregás más al pedido acumulado. Cuando quieras volver a cero, usá <b>Vaciar pedido acumulado</b>.</div>
     </div>
   </div>
 
@@ -93,13 +93,27 @@
     <input type="file" id="file" accept="application/pdf" multiple class="hidden" />
   </div>
 
+  <div class="section" style="margin-top:14px">
+    <h2 style="font-size:14px;margin:0 0 8px">📝 Pedido escrito (WhatsApp, papel, etc.)</h2>
+    <div class="muted" style="font-size:12.5px;margin-bottom:8px">
+      Pegá el texto de un pedido informal (ej. "PEDIDO; Nombre..." con la lista de aromas)
+      y sumalo a la tanda junto con los PDFs.
+    </div>
+    <textarea id="textoPedido" rows="6" placeholder="PEDIDO; Nombre del cliente&#10;..."
+      style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+      color:var(--txt);padding:10px;font-family:inherit;font-size:13.5px;resize:vertical"></textarea>
+    <div class="row" style="margin-top:8px">
+      <button class="btn ghost" id="addTexto">➕ Agregar este pedido a la tanda</button>
+    </div>
+  </div>
+
   <div class="files" id="files"></div>
   <div class="muted hidden" id="eta" style="font-size:12.5px;margin-top:8px"></div>
 
   <div class="row">
     <button class="btn" id="goSum" disabled>➕ Sumar al pedido actual</button>
     <button class="btn" id="goNew" disabled>🆕 Armar pedido nuevo</button>
-    <button class="btn ghost" id="clear" disabled>Limpiar archivos</button>
+    <button class="btn ghost" id="clear" disabled>Limpiar todo</button>
     <button class="btn ghost" id="reset" disabled>Vaciar pedido acumulado</button>
   </div>
 
@@ -109,7 +123,7 @@
 
 <script>
 const $ = (s) => document.querySelector(s);
-let selected = []; // {name, file}
+let selected = []; // {name, kind:"pdf", file} o {name, kind:"texto", contenido}
 let lastAgg = null;
 let allOrders = []; // pedidos ya extraidos, acumulados entre tandas
 let allErrors = [];
@@ -142,26 +156,39 @@ fileInput.addEventListener("change", (e) => addFiles(e.target.files));
 function addFiles(list) {
   for (const f of list) {
     if (f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf")) {
-      if (!selected.some((s) => s.name === f.name && s.file.size === f.size))
-        selected.push({ name: f.name, file: f });
+      if (!selected.some((s) => s.kind === "pdf" && s.name === f.name && s.file.size === f.size))
+        selected.push({ name: f.name, kind: "pdf", file: f });
     }
   }
   renderFiles();
 }
+
+$("#addTexto").onclick = () => {
+  const ta = $("#textoPedido");
+  const contenido = ta.value.trim();
+  if (!contenido) return;
+  const m = contenido.match(/PEDIDO\s*[;:]\s*([^\n]+)/i);
+  const nTextos = selected.filter((s) => s.kind === "texto").length;
+  const label = m ? m[1].trim() : `Pedido escrito ${nTextos + 1}`;
+  selected.push({ name: label, kind: "texto", contenido });
+  ta.value = "";
+  renderFiles();
+};
 
 function renderFiles() {
   const c = $("#files"); c.innerHTML = "";
   selected.forEach((s, i) => {
     const chip = document.createElement("div");
     chip.className = "chip";
-    chip.innerHTML = `📄 ${s.name} <button title="Quitar">✕</button>`;
+    const icono = s.kind === "texto" ? "📝" : "📄";
+    chip.innerHTML = `${icono} ${esc(s.name)} <button title="Quitar">✕</button>`;
     chip.querySelector("button").onclick = () => { selected.splice(i, 1); renderFiles(); };
     c.appendChild(chip);
   });
   const eta = $("#eta");
   if (selected.length) {
     eta.classList.remove("hidden");
-    eta.textContent = `⏱️ Tiempo estimado (procesa de a uno): ~${formatDuration(selected.length * ESTIMATED_SECONDS_PER_PDF)} para ${selected.length} PDF(s).`;
+    eta.textContent = `⏱️ Tiempo estimado (procesa de a uno): ~${formatDuration(selected.length * ESTIMATED_SECONDS_PER_PDF)} para ${selected.length} ítem(s).`;
   } else {
     eta.classList.add("hidden");
   }
@@ -229,7 +256,9 @@ async function procesar(modo) {
         : formatDuration((elapsedS / i) * restantes);
       $("#status").innerHTML = `<div class="note"><span class="spin"></span> Procesando ${i + 1}/${selected.length}: ${esc(s.name)}… (tiempo estimado restante: ~${etaTxt})</div>`;
 
-      const files = [{ name: s.name, dataBase64: await toBase64(s.file) }];
+      const files = [s.kind === "texto"
+        ? { name: s.name, tipo: "texto", contenido: s.contenido }
+        : { name: s.name, tipo: "pdf", dataBase64: await toBase64(s.file) }];
       const resp = await fetch("/api/extract", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

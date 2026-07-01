@@ -1,16 +1,20 @@
 # 🏭 Pedido Unificado a Fábrica
 
-Web para subir los PDFs de tus órdenes, unirlos en un **pedido único** (sumando por
-producto + variante) y calcular la **facturación total**. Usa **GPT-5 Nano**
-(el modelo más barato de OpenAI) para leer los PDFs — se procesan **de a uno**,
-mostrando un tiempo estimado mientras corre — y exporta el pedido a **PDF** y **CSV**.
+Web para subir los PDFs de tus órdenes **o pegar pedidos escritos** (WhatsApp, papel),
+unirlos en un **pedido único** (sumando por producto + variante) y calcular la
+**facturación total**. Usa **GPT-5 Nano** (el modelo más barato de OpenAI) para leer
+todo — se procesa **de a uno**, mostrando un tiempo estimado mientras corre — y
+exporta el pedido a **PDF** y **CSV**.
 
 ---
 
 ## ¿Qué hace?
 
-1. Arrastrás uno o varios PDFs de órdenes (formato "Detalles de la orden #...").
-2. La IA lee cada PDF y extrae los ítems, variantes, cantidades y totales.
+1. Arrastrás uno o varios PDFs de órdenes (formato "Detalles de la orden #...") y/o
+   pegás pedidos escritos informales (WhatsApp, papel, con formato tipo
+   "PEDIDO; Nombre" + lista de aromas por categoría) en el cuadro de texto.
+2. La IA lee cada uno y extrae los ítems, variantes y cantidades (y precios, si el
+   PDF los trae).
 3. Suma todo: si la fragancia **CITRUS** aparece en 3 órdenes, te da la cantidad total.
 4. Te muestra:
    - **Pedido único** para mandar a la fábrica (producto · variante · SKU · cantidad).
@@ -93,6 +97,19 @@ pedido-unificado/
   llega al navegador. Nadie puede robarla viendo el código de la página.
 - **Formato de los PDFs:** está afinado para tus órdenes "Detalles de la orden #...".
   Si cambian mucho de formato, avisame y ajusto el prompt en `api/extract.js`.
+- **Pedidos escritos:** pensado para el formato "PEDIDO; Nombre" + categorías
+  (TEXTILES, CONTRATIPO, AROLAB, DIFUSORES 125cc, etc.) con líneas "cantidad + aroma".
+  Si al principio del texto hay un total declarado por categoría (ej "35 PERFUMINAS
+  TEXTILES") y no coincide con la suma de esa categoría, queda anotado en "Notas de
+  pedido" para que lo revises a mano. Estos pedidos no tienen precios, así que no
+  suman a la facturación (solo a las cantidades del pedido único).
+- **Un pedido escrito no siempre se fusiona en la misma línea que un PDF:** el
+  nombre del producto/aroma que escribe la IA a partir de un texto informal puede no
+  coincidir exactamente con el nombre/código que trae un PDF oficial (por variantes de
+  redacción o abreviaturas). Cuando coincide, se suma en la misma fila; cuando no,
+  aparece como fila aparte en el pedido único — igual queda todo en una sola tabla
+  para revisar. Si querés que ciertos textos siempre se mapeen a un producto/variante
+  exacto, decime cuáles y agrego esa equivalencia al prompt.
 - **Variantes:** se separan por lo que va entre paréntesis en la descripción
   (CITRUS, PHANTOM, etc.). El mismo SKU en distintas variantes se trata por separado.
 - **Notas del pedido:** cosas como "+ 8 esencias del pedido anterior" NO se suman solas
@@ -108,10 +125,10 @@ pedido-unificado/
   intentos) respetando el tiempo de espera que indica la API. La web muestra
   un tiempo estimado restante (arranca en ~3s por PDF y se ajusta con el
   promedio real a medida que van terminando).
-- **Si un PDF falla:** no frena a los demás. Queda listado aparte en
+- **Si un PDF o pedido escrito falla:** no frena a los demás. Queda listado aparte en
   "⚠️ No se pudieron leer" con el motivo en lenguaje simple y neutro (sin
   exponer detalles internos como el proveedor de IA o sus límites), y solo
-  hay que volver a soltar ese archivo.
+  hay que volver a agregarlo.
 - **Vercel `maxDuration: 300`** (en `vercel.json`) requiere plan **Pro** — en el plan
   Hobby las funciones se cortan a los 60s. Con tandas grandes de PDFs procesados
   de a uno, esto puede no alcanzar; si te pasa, subí los PDFs en tandas más chicas.

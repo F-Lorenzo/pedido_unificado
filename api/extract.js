@@ -10,8 +10,8 @@ import pdfParse from "pdf-parse";
 const MODEL = "gpt-5-nano"; // el mas barato de OpenAI, de sobra para extraer JSON de un texto corto
 const API_URL = "https://api.openai.com/v1/chat/completions";
 
-// Prompt que le explica al modelo el formato exacto de estos pedidos.
-const PROMPT = `Sos un extractor de datos de ordenes de compra de una tienda.
+// Prompt para ordenes formales extraidas de un PDF (formato "Detalles de la orden #...").
+const PROMPT_PDF = `Sos un extractor de datos de ordenes de compra de una tienda.
 Te paso el TEXTO de UNA orden (extraido de un PDF). Devolve UNICAMENTE un objeto
 JSON valido (sin texto extra, sin markdown, sin backticks) con esta forma EXACTA:
 
@@ -47,6 +47,55 @@ REGLAS IMPORTANTES:
 TEXTO DE LA ORDEN:
 `;
 
+// Prompt para pedidos informales escritos a mano o por WhatsApp (sin PDF,
+// sin precios, con categorias de producto y listas de aromas/variantes).
+const PROMPT_TEXTO = `Sos un extractor de datos de pedidos informales de una tienda de
+aromatizantes (escritos a mano, por WhatsApp o similar, NO son un PDF formal).
+Devolve UNICAMENTE un objeto JSON valido (sin texto extra, sin markdown, sin
+backticks) con esta forma EXACTA:
+
+{
+  "numeroOrden": null,
+  "fecha": "string o null",
+  "cliente": "string o null",            // el nombre que aparece despues de 'PEDIDO;', 'PEDIDO:' o similar
+  "items": [
+    {
+      "producto": "string",   // nombre de la categoria/linea de producto (ej "Perfumina Textil", "Contratipo", "Arolab", "Difusor de Varillas 125cc"), prolijo, con mayuscula inicial
+      "variante": "string",   // nombre del aroma/fragancia, en MAYUSCULAS, sin numeros ni guiones sueltos
+      "sku": "",
+      "cantidad": number,
+      "precioUnitario": null,
+      "valorTotal": null
+    }
+  ],
+  "subtotal": null,
+  "promociones": null,
+  "total": null,
+  "notas": "string o null"   // usalo SOLO para avisar inconsistencias (ver regla de validacion abajo)
+}
+
+REGLAS IMPORTANTES:
+- El texto suele empezar con "PEDIDO;" o "PEDIDO:" seguido del nombre del cliente.
+- Puede haber un resumen de cantidades totales por tipo de producto al principio
+  (ej "35 PERFUMINAS TEXTILES", "9 CONTRATIPO"). Es solo para validar, NO es un item.
+- Despues viene el detalle real, a veces bajo un titulo "AROMAS:", organizado en
+  subcategorias (ej "TEXTILES:", "Contratipo:", "AROLAB;", "DIFUSORES 125 cc:").
+  Cada subcategoria define el "producto" de los items que siguen.
+- Cada linea de detalle trae una cantidad y un nombre de aroma en formatos como
+  "1 uva y frutos del bosque", "2-212 f", "3- invitus": extrae la cantidad (numero)
+  y el nombre (el resto, sin el numero ni separadores como "-").
+- Si una linea trae una aclaracion entre parentesis (ej "13 surtidas (no Saiba)"),
+  conservala como parte del nombre de la variante.
+- Validacion: si la suma de las cantidades de una subcategoria NO coincide con el
+  total declarado al principio para esa categoria, anotalo en "notas" en lenguaje
+  simple (ej "Textiles: declarado 35, sumado 34, revisar a mano").
+- No inventes items que no esten en el texto.
+- Si un valor no esta, usa null.
+- Devolve solo el JSON, nada mas.
+
+TEXTO DEL PEDIDO:
+`;
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -80,14 +129,14 @@ function apiError(status, rawText) {
   return err;
 }
 
-async function callOpenAI(apiKey, text, attempt = 1) {
+async function callOpenAI(apiKey, promptText, attempt = 1) {
   const payload = {
     model: MODEL,
     // gpt-5-nano no acepta "temperature" distinto del default (1): lo omitimos.
     reasoning_effort: "low", // esta tarea es extraccion simple, no hace falta razonar de mas (ahorra costo y tiempo)
     response_format: { type: "json_object" },
     messages: [
-      { role: "user", content: PROMPT + text }
+      { role: "user", content: promptText }
     ]
   };
 
@@ -114,7 +163,7 @@ async function callOpenAI(apiKey, text, attempt = 1) {
           ? Math.min(Math.ceil(parseFloat(m[1]) * 1000) + 500, 25000)
           : Math.min(4000 * 2 ** (attempt - 1), 20000);
       await sleep(waitMs);
-      return callOpenAI(apiKey, text, attempt + 1);
+      return callOpenAI(apiKey, promptText, attempt + 1);
     }
     throw apiError(resp.status, txt);
   }
@@ -122,18 +171,28 @@ async function callOpenAI(apiKey, text, attempt = 1) {
   return resp.json();
 }
 
-async function extractOne(apiKey, file) {
-  let text;
-  try {
-    const pdfBuffer = Buffer.from(file.dataBase64, "base64");
-    ({ text } = await pdfParse(pdfBuffer));
-  } catch (e) {
-    const err = new Error("El archivo no parece ser un PDF válido o está dañado.");
-    err.technicalDetail = String(e.message || e);
-    throw err;
+async function extractOne(apiKey, item) {
+  const esTexto = item.tipo === "texto";
+  let promptText;
+
+  if (esTexto) {
+    const contenido = String(item.contenido || "").trim();
+    if (!contenido) throw new Error("El pedido escrito está vacío.");
+    promptText = PROMPT_TEXTO + contenido;
+  } else {
+    let text;
+    try {
+      const pdfBuffer = Buffer.from(item.dataBase64, "base64");
+      ({ text } = await pdfParse(pdfBuffer));
+    } catch (e) {
+      const err = new Error("El archivo no parece ser un PDF válido o está dañado.");
+      err.technicalDetail = String(e.message || e);
+      throw err;
+    }
+    promptText = PROMPT_PDF + text;
   }
 
-  const json = await callOpenAI(apiKey, text);
+  const json = await callOpenAI(apiKey, promptText);
   const content = json?.choices?.[0]?.message?.content || "";
   let parsed;
   try {
@@ -154,7 +213,7 @@ async function extractOne(apiKey, file) {
       throw err;
     }
   }
-  parsed.archivo = file.name;
+  parsed.archivo = item.name;
   return parsed;
 }
 
@@ -192,7 +251,8 @@ export default async function handler(req, res) {
     } catch (e) {
       if (e.technicalDetail) console.error(`Error procesando ${f.name}: ${e.technicalDetail}`);
       const msg = e.message || "No se pudo procesar este archivo.";
-      errors.push({ archivo: f.name, error: `${msg} Volvé a subirlo manualmente.` });
+      const reintento = f.tipo === "texto" ? "Volvé a agregarlo manualmente." : "Volvé a subirlo manualmente.";
+      errors.push({ archivo: f.name, error: `${msg} ${reintento}` });
     }
   }
 
