@@ -1,7 +1,7 @@
 {
   "name": "pedido-unificado",
   "version": "1.0.0",
-  "description": "Sube PDFs de ordenes, unifica pedidos por producto+variante y suma la facturacion. Usa DeepSeek V4 Pro via NVIDIA NIM.",
+  "description": "Sube PDFs de ordenes, unifica pedidos por producto+variante y suma la facturacion. Usa Groq (capa gratuita).",
   "private": true,
   "scripts": {
     "deploy": "vercel --prod"

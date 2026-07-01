@@ -1,14 +1,13 @@
 // Serverless function (Vercel) — recibe PDFs en base64, extrae el texto
-// localmente (pdf-parse) y usa DeepSeek V4 Pro (servido via NVIDIA NIM) para
-// estructurarlo en JSON.
+// localmente (pdf-parse) y usa Groq (capa gratuita) para estructurarlo en JSON.
 //
 // La API key NUNCA se expone al navegador: vive solo aca, en el servidor,
-// leida desde la variable de entorno NVIDIA_API_KEY.
+// leida desde la variable de entorno GROQ_API_KEY.
 
 import pdfParse from "pdf-parse";
 
-const MODEL = "deepseek-ai/deepseek-v4-pro";
-const API_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
+const MODEL = "llama-3.3-70b-versatile"; // gratis en Groq, buena calidad para extraccion JSON
+const API_URL = "https://api.groq.com/openai/v1/chat/completions";
 
 // Prompt que le explica al modelo el formato exacto de estos pedidos.
 const PROMPT = `Sos un extractor de datos de ordenes de compra de una tienda.
@@ -66,9 +65,8 @@ function sleep(ms) {
 // Convierte errores tecnicos de la API en un mensaje que cualquiera pueda
 // entender (se muestra tal cual en la web, sin JSON ni codigos de status).
 function friendlyApiError(status, rawText) {
-  if (status === 429) return "El servicio de IA está recibiendo demasiadas solicitudes en este momento.";
+  if (status === 429) return "El servicio de IA está recibiendo demasiadas solicitudes en este momento (límite de la capa gratuita de Groq).";
   if (status === 503) return "El servicio de IA no está disponible en este momento.";
-  if (status === 400 && /DEGRADED/i.test(rawText)) return "El servicio de IA tuvo un problema temporal para leer este archivo.";
   if (status === 401 || status === 403) return "No se pudo autenticar con el servicio de IA (revisar la API key configurada en Vercel).";
   if (status >= 500) return "El servicio de IA tuvo un error interno.";
   return "El servicio de IA no pudo procesar este archivo.";
@@ -76,22 +74,18 @@ function friendlyApiError(status, rawText) {
 
 function apiError(status, rawText) {
   const err = new Error(friendlyApiError(status, rawText));
-  err.technicalDetail = `DeepSeek ${status}: ${rawText.slice(0, 500)}`;
+  err.technicalDetail = `Groq ${status}: ${rawText.slice(0, 500)}`;
   return err;
 }
 
-async function callDeepSeek(apiKey, text, attempt = 1) {
+async function callGroq(apiKey, text, attempt = 1) {
   const payload = {
     model: MODEL,
+    temperature: 0,
+    response_format: { type: "json_object" },
     messages: [
       { role: "user", content: PROMPT + text }
-    ],
-    temperature: 0,
-    top_p: 0.95,
-    max_tokens: 16384, // de sobra para el JSON de una orden; asi cada request corta lo antes posible
-    chat_template_kwargs: { thinking: false },
-    response_format: { type: "json_object" },
-    stream: false
+    ]
   };
 
   const resp = await fetch(API_URL, {
@@ -105,15 +99,14 @@ async function callDeepSeek(apiKey, text, attempt = 1) {
 
   if (!resp.ok) {
     const txt = await resp.text();
-    // NVIDIA NIM devuelve 429/503 por sobrecarga, y a veces un 400 con
-    // "DEGRADED function cannot be invoked" cuando la replica del modelo
-    // esta temporalmente caida de su lado: reintentamos un par de veces
-    // nada mas (ya no hay carga concurrente, no deberia tardar mucho).
-    const retryable = resp.status === 429 || resp.status === 503 || /DEGRADED/i.test(txt);
+    // procesamos de a uno (sin concurrencia), asi que el rate limit gratuito
+    // de Groq casi no deberia gatillar reintentos; igual dejamos un par por
+    // las dudas de picos puntuales.
+    const retryable = resp.status === 429 || resp.status === 503;
     if (retryable && attempt < 3) {
       const waitMs = Math.min(2000 * 2 ** (attempt - 1), 8000);
       await sleep(waitMs);
-      return callDeepSeek(apiKey, text, attempt + 1);
+      return callGroq(apiKey, text, attempt + 1);
     }
     throw apiError(resp.status, txt);
   }
@@ -132,7 +125,7 @@ async function extractOne(apiKey, file) {
     throw err;
   }
 
-  const json = await callDeepSeek(apiKey, text);
+  const json = await callGroq(apiKey, text);
   const content = json?.choices?.[0]?.message?.content || "";
   let parsed;
   try {
@@ -163,9 +156,9 @@ export default async function handler(req, res) {
     return;
   }
 
-  const apiKey = process.env.NVIDIA_API_KEY;
+  const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
-    res.status(500).json({ error: "Falta NVIDIA_API_KEY en el servidor. Cargala en Vercel -> Settings -> Environment Variables." });
+    res.status(500).json({ error: "Falta GROQ_API_KEY en el servidor. Cargala en Vercel -> Settings -> Environment Variables." });
     return;
   }
 
