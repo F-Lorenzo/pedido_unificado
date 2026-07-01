@@ -1,7 +1,7 @@
 {
   "name": "pedido-unificado",
   "version": "1.0.0",
-  "description": "Sube PDFs de ordenes, unifica pedidos por producto+variante y suma la facturacion. Usa Groq (capa gratuita).",
+  "description": "Sube PDFs de ordenes, unifica pedidos por producto+variante y suma la facturacion. Usa Gemini 2.5 Flash-Lite (capa gratuita).",
   "private": true,
   "scripts": {
     "deploy": "vercel --prod"

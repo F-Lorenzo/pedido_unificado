@@ -1,13 +1,14 @@
 // Serverless function (Vercel) — recibe PDFs en base64, extrae el texto
-// localmente (pdf-parse) y usa Groq (capa gratuita) para estructurarlo en JSON.
+// localmente (pdf-parse) y usa Gemini 2.5 Flash-Lite (el modelo mas barato
+// de Gemini, con capa gratuita) para estructurarlo en JSON.
 //
 // La API key NUNCA se expone al navegador: vive solo aca, en el servidor,
-// leida desde la variable de entorno GROQ_API_KEY.
+// leida desde la variable de entorno GEMINI_API_KEY.
 
 import pdfParse from "pdf-parse";
 
-const MODEL = "llama-3.3-70b-versatile"; // gratis en Groq, buena calidad para extraccion JSON
-const API_URL = "https://api.groq.com/openai/v1/chat/completions";
+const MODEL = "gemini-2.5-flash-lite"; // el mas barato de Gemini, de sobra para extraer JSON de un texto corto
+const API_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"; // capa de compatibilidad OpenAI de Gemini
 
 // Prompt que le explica al modelo el formato exacto de estos pedidos.
 const PROMPT = `Sos un extractor de datos de ordenes de compra de una tienda.
@@ -75,11 +76,11 @@ function friendlyApiError(status, rawText) {
 
 function apiError(status, rawText) {
   const err = new Error(friendlyApiError(status, rawText));
-  err.technicalDetail = `Groq ${status}: ${rawText.slice(0, 500)}`;
+  err.technicalDetail = `Gemini ${status}: ${rawText.slice(0, 500)}`;
   return err;
 }
 
-async function callGroq(apiKey, text, attempt = 1) {
+async function callGemini(apiKey, text, attempt = 1) {
   const payload = {
     model: MODEL,
     temperature: 0,
@@ -102,14 +103,14 @@ async function callGroq(apiKey, text, attempt = 1) {
     const txt = await resp.text();
     const retryable = resp.status === 429 || resp.status === 503;
     if (retryable && attempt < 4) {
-      // Groq indica en el propio mensaje cuanto hay que esperar
-      // ("...try again in 1.234s"); si no viene, usamos backoff creciente.
-      const m = txt.match(/try again in ([\d.]+)s/i);
+      // Los errores de cuota de Google suelen traer un "retryDelay":"Xs"
+      // en el detalle; si no viene, usamos backoff creciente.
+      const m = txt.match(/retryDelay["\s:]+(\d+(?:\.\d+)?)s/i) || txt.match(/try again in ([\d.]+)s/i);
       const waitMs = m
         ? Math.min(Math.ceil(parseFloat(m[1]) * 1000) + 500, 20000)
         : Math.min(3000 * 2 ** (attempt - 1), 15000);
       await sleep(waitMs);
-      return callGroq(apiKey, text, attempt + 1);
+      return callGemini(apiKey, text, attempt + 1);
     }
     throw apiError(resp.status, txt);
   }
@@ -128,7 +129,7 @@ async function extractOne(apiKey, file) {
     throw err;
   }
 
-  const json = await callGroq(apiKey, text);
+  const json = await callGemini(apiKey, text);
   const content = json?.choices?.[0]?.message?.content || "";
   let parsed;
   try {
@@ -159,9 +160,9 @@ export default async function handler(req, res) {
     return;
   }
 
-  const apiKey = process.env.GROQ_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    res.status(500).json({ error: "Falta GROQ_API_KEY en el servidor. Cargala en Vercel -> Settings -> Environment Variables." });
+    res.status(500).json({ error: "Falta GEMINI_API_KEY en el servidor. Cargala en Vercel -> Settings -> Environment Variables." });
     return;
   }
 
