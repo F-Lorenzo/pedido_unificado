@@ -63,9 +63,10 @@ function sleep(ms) {
 }
 
 // Convierte errores tecnicos de la API en un mensaje que cualquiera pueda
-// entender (se muestra tal cual en la web, sin JSON ni codigos de status).
+// entender (se muestra tal cual en la web, sin JSON, codigos de status ni
+// referencias a limites de capa gratuita).
 function friendlyApiError(status, rawText) {
-  if (status === 429) return "El servicio de IA está recibiendo demasiadas solicitudes en este momento (límite de la capa gratuita de Groq).";
+  if (status === 429) return "El motor de inteligencia artificial alcanzó su capacidad máxima momentánea.";
   if (status === 503) return "El servicio de IA no está disponible en este momento.";
   if (status === 401 || status === 403) return "No se pudo autenticar con el servicio de IA (revisar la API key configurada en Vercel).";
   if (status >= 500) return "El servicio de IA tuvo un error interno.";
@@ -99,12 +100,14 @@ async function callGroq(apiKey, text, attempt = 1) {
 
   if (!resp.ok) {
     const txt = await resp.text();
-    // procesamos de a uno (sin concurrencia), asi que el rate limit gratuito
-    // de Groq casi no deberia gatillar reintentos; igual dejamos un par por
-    // las dudas de picos puntuales.
     const retryable = resp.status === 429 || resp.status === 503;
-    if (retryable && attempt < 3) {
-      const waitMs = Math.min(2000 * 2 ** (attempt - 1), 8000);
+    if (retryable && attempt < 4) {
+      // Groq indica en el propio mensaje cuanto hay que esperar
+      // ("...try again in 1.234s"); si no viene, usamos backoff creciente.
+      const m = txt.match(/try again in ([\d.]+)s/i);
+      const waitMs = m
+        ? Math.min(Math.ceil(parseFloat(m[1]) * 1000) + 500, 20000)
+        : Math.min(3000 * 2 ** (attempt - 1), 15000);
       await sleep(waitMs);
       return callGroq(apiKey, text, attempt + 1);
     }

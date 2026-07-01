@@ -82,7 +82,7 @@
   <div class="chat" id="chat">
     <div class="msg">
       <div class="who">Asistente</div>
-      <div class="bubble">¡Hola Facu! Soltá acá los PDFs de las órdenes (los proceso de a uno, así si alguno falla no afecta a los demás). Con <b>Armar pedido nuevo</b> empezás de cero; con <b>Sumar al pedido actual</b> agregás más órdenes a lo que ya tenías acumulado. Cuando quieras volver a cero, usá <b>Vaciar pedido acumulado</b>.</div>
+      <div class="bubble">¡Hola Facu! Soltá acá los PDFs de las órdenes (los proceso de a uno, con una pequeña pausa entre cada uno para que la tanda completa termine sin cortarse). Con <b>Armar pedido nuevo</b> empezás de cero; con <b>Sumar al pedido actual</b> agregás más órdenes a lo que ya tenías acumulado. Cuando quieras volver a cero, usá <b>Vaciar pedido acumulado</b>.</div>
     </div>
   </div>
 
@@ -114,7 +114,12 @@ let lastAgg = null;
 let allOrders = []; // pedidos ya extraidos, acumulados entre tandas
 let allErrors = [];
 
-const ESTIMATED_SECONDS_PER_PDF = 6; // estimacion inicial por PDF (lectura + llamada a Groq), se recalcula con el promedio real a medida que procesa
+const ESTIMATED_SECONDS_PER_PDF = 9; // estimacion inicial por PDF (lectura + llamada a IA + pausa entre archivos), se recalcula con el promedio real a medida que procesa
+const PACING_DELAY_MS = 3500; // pausa entre PDFs para que el servicio de IA soporte la tanda completa sin cortarse
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function formatDuration(totalSeconds) {
   const s = Math.max(0, Math.round(totalSeconds));
@@ -235,6 +240,10 @@ async function procesar(modo) {
 
       nuevasOrdenes.push(...(data.orders || []));
       nuevosErrores.push(...(data.errors || []));
+
+      // Pequeña pausa entre archivos para que el servicio de IA aguante toda
+      // la tanda sin cortarse (no hace falta despues del ultimo).
+      if (i < selected.length - 1) await sleep(PACING_DELAY_MS);
     }
 
     allOrders.push(...nuevasOrdenes);

@@ -98,13 +98,16 @@ pedido-unificado/
 - **Facturación bruta** = suma de los *subtotales* (antes de promociones). También se
   muestra el total cobrado (después de promos).
 - **Procesamiento de a uno:** cada PDF se manda en su propio request, en orden,
-  sin trabajo en paralelo. Es más lento que procesar todo junto, pero más
-  predecible y evita saturar el rate limit gratuito de Groq. La web muestra un
-  tiempo estimado restante (arranca en ~6s por PDF y se ajusta con el promedio
-  real a medida que van terminando).
+  sin trabajo en paralelo, con una pausa de ~3.5s entre archivo y archivo
+  (`PACING_DELAY_MS` en `public/index.html`) para que tandas grandes terminen
+  sin cortarse por el rate limit de Groq. Si igual llega a pasar, el backend
+  reintenta automáticamente respetando el tiempo de espera que indica Groq.
+  La web muestra un tiempo estimado restante (arranca en ~9s por PDF y se
+  ajusta con el promedio real a medida que van terminando).
 - **Si un PDF falla:** no frena a los demás. Queda listado aparte en
-  "⚠️ No se pudieron leer" con el motivo en lenguaje simple (ej. "el servicio
-  de IA está saturado"), y solo hay que volver a soltar ese archivo.
+  "⚠️ No se pudieron leer" con el motivo en lenguaje simple y neutro (sin
+  exponer detalles internos como el proveedor de IA o sus límites), y solo
+  hay que volver a soltar ese archivo.
 - **Vercel `maxDuration: 300`** (en `vercel.json`) requiere plan **Pro** — en el plan
   Hobby las funciones se cortan a los 60s. Con tandas grandes de PDFs procesados
   de a uno, esto puede no alcanzar; si te pasa, subí los PDFs en tandas más chicas.
