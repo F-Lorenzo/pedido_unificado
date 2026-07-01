@@ -95,6 +95,14 @@ pedido-unificado/
 
 - **Tu API key está protegida:** vive solo en el servidor (`api/extract.js`), nunca
   llega al navegador. Nadie puede robarla viendo el código de la página.
+- **El pedido acumulado se guarda solo en tu navegador** (`localStorage`, no en un
+  servidor) por hasta **24hs** desde la última actividad. Si recargás la página sin
+  querer, se recupera automáticamente al volver a abrirla. Pasadas las 24hs (o al
+  usar <b>Vaciar pedido acumulado</b>) se borra solo. Ojo: solo se guardan las
+  órdenes ya procesadas y los pedidos escritos en cola — los PDFs que subiste pero
+  todavía no procesaste NO se guardan (son pesados para `localStorage`), así que si
+  se recarga la página antes de darle a "Sumar"/"Armar pedido", hay que volver a
+  soltarlos.
 - **Formato de los PDFs:** está afinado para tus órdenes "Detalles de la orden #...".
   Si cambian mucho de formato, avisame y ajusto el prompt en `api/extract.js`.
 - **Pedidos escritos:** pensado para el formato "PEDIDO; Nombre" + categorías

@@ -82,7 +82,7 @@
   <div class="chat" id="chat">
     <div class="msg">
       <div class="who">Asistente</div>
-      <div class="bubble">¡Hola Facu! Soltá acá los PDFs de las órdenes, y si tenés pedidos escritos a mano o por WhatsApp pegalos en el cuadro de texto de abajo — ambos se suman al mismo pedido único. Con <b>Armar pedido nuevo</b> empezás de cero; con <b>Sumar al pedido actual</b> agregás más al pedido acumulado. Cuando quieras volver a cero, usá <b>Vaciar pedido acumulado</b>.</div>
+      <div class="bubble">¡Hola Facu! Soltá acá los PDFs de las órdenes, y si tenés pedidos escritos a mano o por WhatsApp pegalos en el cuadro de texto de abajo — ambos se suman al mismo pedido único. Con <b>Armar pedido nuevo</b> empezás de cero; con <b>Sumar al pedido actual</b> agregás más al pedido acumulado. Cuando quieras volver a cero, usá <b>Vaciar pedido acumulado</b>. Tu avance se guarda solo en este navegador por hasta 24hs, así que si se recarga la página sin querer no lo perdés.</div>
     </div>
   </div>
 
@@ -131,8 +131,48 @@ let allErrors = [];
 const ESTIMATED_SECONDS_PER_PDF = 3; // estimacion inicial por PDF (lectura + llamada a IA + pausa entre archivos), se recalcula con el promedio real a medida que procesa
 const PACING_DELAY_MS = 1200; // pausa entre PDFs (limite de la cuenta paga de OpenAI es mucho mas alto, no hace falta tanto margen)
 
+const STORAGE_KEY = "pedidoUnificado.v1";
+const STORAGE_TTL_MS = 24 * 60 * 60 * 1000; // el progreso guardado vence a las 24hs de la ultima actividad
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Guarda el pedido acumulado y los pedidos escritos aun no procesados, para
+// no perder el avance si se recarga la pagina sin querer. No guarda los PDFs
+// en cola (todavia sin procesar) porque su contenido es pesado para
+// localStorage; si se pierde la pagina antes de procesarlos, hay que
+// volver a soltarlos.
+function guardarEstado() {
+  try {
+    const data = {
+      ts: Date.now(),
+      allOrders,
+      allErrors,
+      textosPendientes: selected
+        .filter((s) => s.kind === "texto")
+        .map((s) => ({ name: s.name, contenido: s.contenido }))
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch (e) {
+    // localStorage puede fallar (privado/lleno/deshabilitado): no es critico, seguimos sin persistir.
+  }
+}
+
+function cargarEstado() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || typeof data.ts !== "number") return null;
+    if (Date.now() - data.ts > STORAGE_TTL_MS) {
+      localStorage.removeItem(STORAGE_KEY);
+      return null;
+    }
+    return data;
+  } catch (e) {
+    return null;
+  }
 }
 
 function formatDuration(totalSeconds) {
@@ -193,6 +233,7 @@ function renderFiles() {
     eta.classList.add("hidden");
   }
   setButtonsDisabled(false);
+  guardarEstado();
 }
 
 $("#clear").onclick = () => {
@@ -203,8 +244,8 @@ $("#clear").onclick = () => {
 $("#reset").onclick = () => {
   allOrders = []; allErrors = []; lastAgg = null;
   $("#result").innerHTML = ""; $("#status").innerHTML = "";
-  renderFiles();
-  addMsg("Listo, vacié el pedido acumulado. Subí PDFs nuevos cuando quieras.");
+  renderFiles(); // tambien borra lo guardado en este navegador (guardarEstado corre al final)
+  addMsg("Listo, vacié el pedido acumulado (incluido lo que tenía guardado en este navegador). Subí PDFs nuevos cuando quieras.");
 };
 
 function toBase64(file) {
@@ -299,10 +340,12 @@ function render(agg, errors, nOrders, info) {
   const f = PedidoAgg.formatARS;
   let html = "";
 
-  if (info && info.modo === "sumar" && info.nuevasEnEstaTanda > 0) {
-    addMsg(`Sumé <b>${info.nuevasEnEstaTanda}</b> orden(es) nueva(s) al pedido acumulado. Total ahora: <b>${nOrders}</b> orden(es), <b>${agg.lineas.length}</b> productos distintos, <b>${agg.totalUnidades}</b> unidades.`);
-  } else {
-    addMsg(`Listo ✅ Uní <b>${nOrders}</b> orden(es) en <b>${agg.lineas.length}</b> productos distintos, <b>${agg.totalUnidades}</b> unidades en total.`);
+  if (!info || !info.silent) {
+    if (info && info.modo === "sumar" && info.nuevasEnEstaTanda > 0) {
+      addMsg(`Sumé <b>${info.nuevasEnEstaTanda}</b> orden(es) nueva(s) al pedido acumulado. Total ahora: <b>${nOrders}</b> orden(es), <b>${agg.lineas.length}</b> productos distintos, <b>${agg.totalUnidades}</b> unidades.`);
+    } else {
+      addMsg(`Listo ✅ Uní <b>${nOrders}</b> orden(es) en <b>${agg.lineas.length}</b> productos distintos, <b>${agg.totalUnidades}</b> unidades en total.`);
+    }
   }
 
   html += `<div class="cards">
@@ -435,6 +478,34 @@ window.exportPDF = function () {
 
   doc.save("pedido-unificado.pdf");
 };
+
+// Al cargar la pagina, si hay un pedido acumulado (o pedidos escritos en
+// cola) guardado en las ultimas 24hs, lo recuperamos automaticamente.
+(function restaurarEstado() {
+  const data = cargarEstado();
+  if (!data) return;
+
+  if (Array.isArray(data.allOrders) && data.allOrders.length) {
+    allOrders = data.allOrders;
+    allErrors = Array.isArray(data.allErrors) ? data.allErrors : [];
+    const agg = PedidoAgg.aggregate(allOrders);
+    lastAgg = agg;
+    render(agg, allErrors, allOrders.length, { silent: true });
+    const horas = Math.max(0, (Date.now() - data.ts) / 3600000);
+    const hacecuanto = horas < 1 ? `${Math.round(horas * 60)} min` : `${horas.toFixed(1)}h`;
+    addMsg(`Recuperé el pedido acumulado que tenías guardado en este navegador (hace ${hacecuanto}). Se guarda hasta por 24hs; si no es el que esperabas, usá <b>Vaciar pedido acumulado</b>.`);
+  }
+
+  if (Array.isArray(data.textosPendientes) && data.textosPendientes.length) {
+    for (const t of data.textosPendientes) {
+      if (t && t.contenido) selected.push({ name: t.name || "Pedido escrito", kind: "texto", contenido: t.contenido });
+    }
+  }
+
+  // Refresca chips y estado de botones (ej. habilita "Vaciar pedido
+  // acumulado" si se restauro un pedido) aunque no haya textos en cola.
+  renderFiles();
+})();
 </script>
 </body>
 </html>
