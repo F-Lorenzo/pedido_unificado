@@ -1,10 +1,9 @@
 # 🏭 Pedido Unificado a Fábrica
 
 Web para subir los PDFs de tus órdenes, unirlos en un **pedido único** (sumando por
-producto + variante) y calcular la **facturación total**. Usa **Gemini 2.5 Flash-Lite**
-(el modelo más barato de Gemini, con capa gratuita) para leer los PDFs — se procesan
-**de a uno**, mostrando un tiempo estimado mientras corre — y exporta el pedido a
-**PDF** y **CSV**.
+producto + variante) y calcular la **facturación total**. Usa **GPT-5 Nano**
+(el modelo más barato de OpenAI) para leer los PDFs — se procesan **de a uno**,
+mostrando un tiempo estimado mientras corre — y exporta el pedido a **PDF** y **CSV**.
 
 ---
 
@@ -22,15 +21,16 @@ producto + variante) y calcular la **facturación total**. Usa **Gemini 2.5 Flas
 
 ---
 
-## Paso 1 — Conseguir la API key gratuita de Gemini
+## Paso 1 — Conseguir la API key de OpenAI
 
-1. Entrá a **https://aistudio.google.com/apikey** con tu cuenta de Google.
-2. Clic en **"Create API key"**.
-3. Copiá la clave. La vas a pegar en Vercel en el Paso 2.
+1. Entrá a **https://platform.openai.com/api-keys** con tu cuenta (necesitás saldo
+   cargado — aunque sean un par de dólares, GPT-5 Nano es muy barato).
+2. Clic en **"Create new secret key"**.
+3. Copiá la clave (empieza con `sk-...`). La vas a pegar en Vercel en el Paso 2.
 
-> Es gratis. Gemini 2.5 Flash-Lite es el modelo más barato de Gemini y tiene capa
-> gratuita, así que alcanza de sobra para leer varios PDFs por día — más todavía
-> ahora que se procesan de a uno (sin ráfagas de requests en paralelo).
+> No es gratis, pero es muy barato: GPT-5 Nano cuesta $0.05 / 1M tokens de entrada
+> y $0.40 / 1M de salida. Procesar 100 PDFs sale centavos de dólar. Al tener saldo
+> cargado también tenés límites de uso mucho más altos que cualquier capa gratuita.
 
 ---
 
@@ -43,7 +43,7 @@ producto + variante) y calcular la **facturación total**. Usa **Gemini 2.5 Flas
    - Si usás GitHub: subí la carpeta `pedido-unificado` a un repositorio nuevo,
      después en Vercel → **Add New → Project** → importás ese repo.
 3. Antes de terminar el deploy, en **Environment Variables** agregá:
-   - **Name:** `GEMINI_API_KEY`
+   - **Name:** `OPENAI_API_KEY`
    - **Value:** la clave que copiaste en el Paso 1
 4. Clic en **Deploy**. En 1–2 minutos te da una URL pública (ej. `https://pedido-unificado.vercel.app`).
    ¡Esa es tu app, accesible desde cualquier lado!
@@ -54,7 +54,7 @@ producto + variante) y calcular la **facturación total**. Usa **Gemini 2.5 Flas
 npm i -g vercel        # instala el comando vercel (una sola vez)
 cd pedido-unificado
 vercel                 # seguí los pasos; te pide loguearte
-vercel env add GEMINI_API_KEY   # pegá tu clave cuando te la pida
+vercel env add OPENAI_API_KEY   # pegá tu clave cuando te la pida
 vercel --prod          # publica la versión final
 ```
 
@@ -63,7 +63,7 @@ vercel --prod          # publica la versión final
 ## Probar en tu compu antes de publicar (opcional)
 
 ```bash
-cp .env.example .env.local      # y pegá tu GEMINI_API_KEY dentro
+cp .env.example .env.local      # y pegá tu OPENAI_API_KEY dentro
 npm i -g vercel
 vercel dev                      # abre http://localhost:3000
 ```
@@ -75,7 +75,7 @@ vercel dev                      # abre http://localhost:3000
 ```
 pedido-unificado/
 ├─ api/
-│  └─ extract.js        ← backend: extrae texto del PDF y llama a Gemini (acá vive la API key, segura)
+│  └─ extract.js        ← backend: extrae texto del PDF y llama a OpenAI (acá vive la API key, segura)
 ├─ public/
 │  ├─ index.html        ← la web (chat, subida, tabla, exportar PDF/CSV)
 │  └─ aggregate.js      ← lógica de unificación (suma por producto+variante)
@@ -100,14 +100,14 @@ pedido-unificado/
 - **Facturación bruta** = suma de los *subtotales* (antes de promociones). También se
   muestra el total cobrado (después de promos).
 - **Procesamiento de a uno:** cada PDF se manda en su propio request, en orden,
-  sin trabajo en paralelo, con una pausa de ~6s entre archivo y archivo
-  (`PACING_DELAY_MS` en `public/index.html`) para que tandas grandes terminen
-  sin cortarse por el rate limit gratuito de Gemini (~15 solicitudes/minuto
-  para Flash-Lite) o por sobrecarga momentánea del lado de Google. Si igual
-  llega a pasar, el backend reintenta automáticamente (hasta 5 intentos)
-  respetando el tiempo de espera que indica la API. La web muestra un tiempo
-  estimado restante (arranca en ~13s por PDF y se ajusta con el promedio real
-  a medida que van terminando).
+  sin trabajo en paralelo, con una pausa corta de ~1.2s entre archivo y archivo
+  (`PACING_DELAY_MS` en `public/index.html`) — con cuenta paga de OpenAI el
+  límite es mucho más alto (500 solicitudes/minuto en Tier 1) que en las capas
+  gratuitas que probamos antes, así que no hace falta ser tan conservador. Si
+  igual se llega a saturar, el backend reintenta automáticamente (hasta 5
+  intentos) respetando el tiempo de espera que indica la API. La web muestra
+  un tiempo estimado restante (arranca en ~3s por PDF y se ajusta con el
+  promedio real a medida que van terminando).
 - **Si un PDF falla:** no frena a los demás. Queda listado aparte en
   "⚠️ No se pudieron leer" con el motivo en lenguaje simple y neutro (sin
   exponer detalles internos como el proveedor de IA o sus límites), y solo

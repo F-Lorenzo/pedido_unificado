@@ -1,14 +1,14 @@
 // Serverless function (Vercel) — recibe PDFs en base64, extrae el texto
-// localmente (pdf-parse) y usa Gemini 2.5 Flash-Lite (el modelo mas barato
-// de Gemini, con capa gratuita) para estructurarlo en JSON.
+// localmente (pdf-parse) y usa GPT-5 Nano (el modelo mas barato de OpenAI)
+// para estructurarlo en JSON.
 //
 // La API key NUNCA se expone al navegador: vive solo aca, en el servidor,
-// leida desde la variable de entorno GEMINI_API_KEY.
+// leida desde la variable de entorno OPENAI_API_KEY.
 
 import pdfParse from "pdf-parse";
 
-const MODEL = "gemini-2.5-flash-lite"; // el mas barato de Gemini, de sobra para extraer JSON de un texto corto
-const API_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"; // capa de compatibilidad OpenAI de Gemini
+const MODEL = "gpt-5-nano"; // el mas barato de OpenAI, de sobra para extraer JSON de un texto corto
+const API_URL = "https://api.openai.com/v1/chat/completions";
 
 // Prompt que le explica al modelo el formato exacto de estos pedidos.
 const PROMPT = `Sos un extractor de datos de ordenes de compra de una tienda.
@@ -76,14 +76,15 @@ function friendlyApiError(status, rawText) {
 
 function apiError(status, rawText) {
   const err = new Error(friendlyApiError(status, rawText));
-  err.technicalDetail = `Gemini ${status}: ${rawText.slice(0, 500)}`;
+  err.technicalDetail = `OpenAI ${status}: ${rawText.slice(0, 500)}`;
   return err;
 }
 
-async function callGemini(apiKey, text, attempt = 1) {
+async function callOpenAI(apiKey, text, attempt = 1) {
   const payload = {
     model: MODEL,
-    temperature: 0,
+    // gpt-5-nano no acepta "temperature" distinto del default (1): lo omitimos.
+    reasoning_effort: "low", // esta tarea es extraccion simple, no hace falta razonar de mas (ahorra costo y tiempo)
     response_format: { type: "json_object" },
     messages: [
       { role: "user", content: PROMPT + text }
@@ -103,14 +104,17 @@ async function callGemini(apiKey, text, attempt = 1) {
     const txt = await resp.text();
     const retryable = resp.status === 429 || resp.status === 503;
     if (retryable && attempt < 5) {
-      // Los errores de cuota de Google suelen traer un "retryDelay":"Xs"
-      // en el detalle; si no viene, usamos backoff creciente.
-      const m = txt.match(/retryDelay["\s:]+(\d+(?:\.\d+)?)s/i) || txt.match(/try again in ([\d.]+)s/i);
-      const waitMs = m
-        ? Math.min(Math.ceil(parseFloat(m[1]) * 1000) + 500, 25000)
-        : Math.min(4000 * 2 ** (attempt - 1), 20000);
+      // OpenAI suele mandar el header "retry-after"; si no viene, buscamos
+      // una pista en el cuerpo, y si tampoco hay usamos backoff creciente.
+      const headerWait = parseFloat(resp.headers.get("retry-after") || "");
+      const m = !isNaN(headerWait) ? null : txt.match(/try again in ([\d.]+)s/i);
+      const waitMs = !isNaN(headerWait)
+        ? Math.min(Math.ceil(headerWait * 1000) + 500, 25000)
+        : m
+          ? Math.min(Math.ceil(parseFloat(m[1]) * 1000) + 500, 25000)
+          : Math.min(4000 * 2 ** (attempt - 1), 20000);
       await sleep(waitMs);
-      return callGemini(apiKey, text, attempt + 1);
+      return callOpenAI(apiKey, text, attempt + 1);
     }
     throw apiError(resp.status, txt);
   }
@@ -129,7 +133,7 @@ async function extractOne(apiKey, file) {
     throw err;
   }
 
-  const json = await callGemini(apiKey, text);
+  const json = await callOpenAI(apiKey, text);
   const content = json?.choices?.[0]?.message?.content || "";
   let parsed;
   try {
@@ -160,9 +164,9 @@ export default async function handler(req, res) {
     return;
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    res.status(500).json({ error: "Falta GEMINI_API_KEY en el servidor. Cargala en Vercel -> Settings -> Environment Variables." });
+    res.status(500).json({ error: "Falta OPENAI_API_KEY en el servidor. Cargala en Vercel -> Settings -> Environment Variables." });
     return;
   }
 

@@ -114,8 +114,8 @@ let lastAgg = null;
 let allOrders = []; // pedidos ya extraidos, acumulados entre tandas
 let allErrors = [];
 
-const ESTIMATED_SECONDS_PER_PDF = 13; // estimacion inicial por PDF (lectura + llamada a IA + pausa entre archivos), se recalcula con el promedio real a medida que procesa
-const PACING_DELAY_MS = 6000; // pausa entre PDFs para que el servicio de IA soporte la tanda completa sin cortarse
+const ESTIMATED_SECONDS_PER_PDF = 3; // estimacion inicial por PDF (lectura + llamada a IA + pausa entre archivos), se recalcula con el promedio real a medida que procesa
+const PACING_DELAY_MS = 1200; // pausa entre PDFs (limite de la cuenta paga de OpenAI es mucho mas alto, no hace falta tanto margen)
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
