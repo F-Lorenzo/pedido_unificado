@@ -106,6 +106,15 @@ pedido-unificado/
   todavía no procesaste NO se guardan (son pesados para `localStorage`), así que si
   se recarga la página antes de darle a "Sumar"/"Armar pedido", hay que volver a
   soltarlos.
+- **Caché de extracciones por archivo:** aunque `temperature=0` reduce mucho la
+  variación, OpenAI no garantiza una salida 100% idéntica siempre (es una limitación
+  conocida de su API, no de este código). Por eso cada PDF/pedido escrito se
+  identifica por un hash de su contenido exacto y el resultado se guarda en
+  `localStorage`: si volvés a procesar el mismo archivo/texto (en esta corrida o en
+  otra), se reusa el resultado guardado en vez de volver a llamar a la IA — así das
+  el mismo archivo dos veces y te da **siempre** el mismo resultado. Botón
+  <b>Vaciar caché de extracciones</b> para forzar que se vuelva a leer todo de cero
+  (por ejemplo si sospechás que alguna extracción quedó mal la primera vez).
 - **Formato de los PDFs:** está afinado para tus órdenes "Detalles de la orden #...".
   Si cambian mucho de formato, avisame y ajusto el prompt en `api/extract.js`.
 - **Pedidos escritos:** pensado para el formato "PEDIDO; Nombre" + categorías

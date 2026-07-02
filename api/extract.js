@@ -145,6 +145,7 @@ async function callOpenAI(apiKey, promptText, attempt = 1) {
   const payload = {
     model: MODEL,
     temperature: 0, // salida deterministica: mismo PDF, mismo resultado
+    seed: 20260701, // fijo, mejora el "mejor esfuerzo" de determinismo de OpenAI (no es garantia total)
     response_format: { type: "json_object" },
     messages: [
       { role: "user", content: promptText }

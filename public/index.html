@@ -115,6 +115,7 @@
     <button class="btn" id="goNew" disabled>🆕 Armar pedido nuevo</button>
     <button class="btn ghost" id="clear" disabled>Limpiar todo</button>
     <button class="btn ghost" id="reset" disabled>Vaciar pedido acumulado</button>
+    <button class="btn ghost" id="clearCache">Vaciar caché de extracciones</button>
   </div>
 
   <div id="status"></div>
@@ -134,8 +135,40 @@ const PACING_DELAY_MS = 1200; // pausa entre PDFs (limite de la cuenta paga de O
 const STORAGE_KEY = "pedidoUnificado.v1";
 const STORAGE_TTL_MS = 24 * 60 * 60 * 1000; // el progreso guardado vence a las 24hs de la ultima actividad
 
+const CACHE_KEY = "pedidoUnificado.cache.v1";
+const PROMPT_VERSION = "v1"; // subir este numero cuando cambie el prompt en api/extract.js, para invalidar la cache vieja
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Hashea el contenido exacto de un PDF (base64) o pedido escrito, para poder
+// reusar el resultado si se procesa el mismo archivo/texto de nuevo. Asi, dos
+// corridas con los mismos PDFs dan exactamente el mismo resultado la segunda
+// vez (no dependemos de que la IA sea 100% deterministica sola).
+async function hashContenido(str) {
+  const enc = new TextEncoder().encode(PROMPT_VERSION + "|" + str);
+  const buf = await crypto.subtle.digest("SHA-256", enc);
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function leerCache() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function guardarEnCache(hash, orden) {
+  try {
+    const cache = leerCache();
+    cache[hash] = orden;
+    localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+  } catch (e) {
+    // localStorage lleno/deshabilitado: no es critico, seguimos sin cachear.
+  }
 }
 
 // Guarda el pedido acumulado y los pedidos escritos aun no procesados, para
@@ -248,6 +281,11 @@ $("#reset").onclick = () => {
   addMsg("Listo, vacié el pedido acumulado (incluido lo que tenía guardado en este navegador). Subí PDFs nuevos cuando quieras.");
 };
 
+$("#clearCache").onclick = () => {
+  try { localStorage.removeItem(CACHE_KEY); } catch (e) {}
+  addMsg("Vacié la caché de extracciones: la próxima vez que subas un PDF o pedido escrito (aunque ya lo hayas procesado antes) se lo vuelvo a mandar a la IA en vez de reusar el resultado guardado.");
+};
+
 function toBase64(file) {
   return new Promise((res, rej) => {
     const r = new FileReader();
@@ -297,9 +335,21 @@ async function procesar(modo) {
         : formatDuration((elapsedS / i) * restantes);
       $("#status").innerHTML = `<div class="note"><span class="spin"></span> Procesando ${i + 1}/${selected.length}: ${esc(s.name)}… (tiempo estimado restante: ~${etaTxt})</div>`;
 
+      const contenidoParaHash = s.kind === "texto" ? s.contenido : await toBase64(s.file);
+      let hash = null;
+      try { hash = await hashContenido(contenidoParaHash); } catch (e) { /* sin hash, seguimos sin cache */ }
+
+      const cache = hash ? leerCache() : null;
+      if (cache && cache[hash]) {
+        // Mismo archivo/texto ya procesado antes: reusamos el resultado tal
+        // cual, sin volver a llamar a la IA (y sin pausa, no hubo request).
+        nuevasOrdenes.push(cache[hash]);
+        continue;
+      }
+
       const files = [s.kind === "texto"
         ? { name: s.name, tipo: "texto", contenido: s.contenido }
-        : { name: s.name, tipo: "pdf", dataBase64: await toBase64(s.file) }];
+        : { name: s.name, tipo: "pdf", dataBase64: contenidoParaHash }];
       const resp = await fetch("/api/extract", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -310,6 +360,8 @@ async function procesar(modo) {
 
       nuevasOrdenes.push(...(data.orders || []));
       nuevosErrores.push(...(data.errors || []));
+
+      if (hash && data.orders && data.orders[0]) guardarEnCache(hash, data.orders[0]);
 
       // Pequeña pausa entre archivos para que el servicio de IA aguante toda
       // la tanda sin cortarse (no hace falta despues del ultimo).
