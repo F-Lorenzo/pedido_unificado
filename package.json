@@ -1,7 +1,7 @@
 {
   "name": "pedido-unificado",
   "version": "1.0.0",
-  "description": "Sube PDFs de ordenes, unifica pedidos por producto+variante y suma la facturacion. Usa GPT-5 Nano (OpenAI).",
+  "description": "Sube PDFs de ordenes, unifica pedidos por producto+variante y suma la facturacion. Usa GPT-4.1 Nano (OpenAI).",
   "private": true,
   "scripts": {
     "deploy": "vercel --prod"

@@ -2,9 +2,9 @@
 
 Web para subir los PDFs de tus órdenes **o pegar pedidos escritos** (WhatsApp, papel),
 unirlos en un **pedido único** (sumando por producto + variante) y calcular la
-**facturación total**. Usa **GPT-5 Nano** (el modelo más barato de OpenAI) para leer
-todo — se procesa **de a uno**, mostrando un tiempo estimado mientras corre — y
-exporta el pedido a **PDF** y **CSV**.
+**facturación total**. Usa **GPT-4.1 Nano** (OpenAI, muy barato y con salida
+determinística) para leer todo — se procesa **de a uno**, mostrando un tiempo
+estimado mientras corre — y exporta el pedido a **PDF** y **CSV**.
 
 ---
 
@@ -28,13 +28,16 @@ exporta el pedido a **PDF** y **CSV**.
 ## Paso 1 — Conseguir la API key de OpenAI
 
 1. Entrá a **https://platform.openai.com/api-keys** con tu cuenta (necesitás saldo
-   cargado — aunque sean un par de dólares, GPT-5 Nano es muy barato).
+   cargado — aunque sean un par de dólares, GPT-4.1 Nano es muy barato).
 2. Clic en **"Create new secret key"**.
 3. Copiá la clave (empieza con `sk-...`). La vas a pegar en Vercel en el Paso 2.
 
-> No es gratis, pero es muy barato: GPT-5 Nano cuesta $0.05 / 1M tokens de entrada
+> No es gratis, pero es muy barato: GPT-4.1 Nano cuesta $0.10 / 1M tokens de entrada
 > y $0.40 / 1M de salida. Procesar 100 PDFs sale centavos de dólar. Al tener saldo
 > cargado también tenés límites de uso mucho más altos que cualquier capa gratuita.
+> Se eligió sobre GPT-5 Nano porque soporta `temperature=0`: con el mismo PDF da
+> siempre el mismo resultado (GPT-5 Nano fuerza una temperatura no-determinística
+> y podía dar cantidades o deletreos de variantes distintos entre corridas).
 
 ---
 

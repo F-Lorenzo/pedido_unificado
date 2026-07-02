@@ -1,13 +1,16 @@
 // Serverless function (Vercel) — recibe PDFs en base64, extrae el texto
-// localmente (pdf-parse) y usa GPT-5 Nano (el modelo mas barato de OpenAI)
-// para estructurarlo en JSON.
+// localmente (pdf-parse) y usa GPT-4.1 Nano (OpenAI) para estructurarlo en JSON.
 //
 // La API key NUNCA se expone al navegador: vive solo aca, en el servidor,
 // leida desde la variable de entorno OPENAI_API_KEY.
 
 import pdfParse from "pdf-parse";
 
-const MODEL = "gpt-5-nano"; // el mas barato de OpenAI, de sobra para extraer JSON de un texto corto
+// gpt-4.1-nano en vez de gpt-5-nano: cuesta un poco mas pero soporta
+// temperature=0 (salida deterministica de verdad), a diferencia de la
+// familia gpt-5 que fuerza temperature=1 y puede variar entre corridas
+// con el mismo PDF (deletreo de variantes, cantidades, etc.).
+const MODEL = "gpt-4.1-nano";
 const API_URL = "https://api.openai.com/v1/chat/completions";
 
 // Prompt para ordenes formales extraidas de un PDF (formato "Detalles de la orden #...").
@@ -141,8 +144,7 @@ function apiError(status, rawText) {
 async function callOpenAI(apiKey, promptText, attempt = 1) {
   const payload = {
     model: MODEL,
-    // gpt-5-nano no acepta "temperature" distinto del default (1): lo omitimos.
-    reasoning_effort: "low", // esta tarea es extraccion simple, no hace falta razonar de mas (ahorra costo y tiempo)
+    temperature: 0, // salida deterministica: mismo PDF, mismo resultado
     response_format: { type: "json_object" },
     messages: [
       { role: "user", content: promptText }
