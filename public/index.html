@@ -116,6 +116,7 @@
     <button class="btn ghost" id="clear" disabled>Limpiar todo</button>
     <button class="btn ghost" id="reset" disabled>Vaciar pedido acumulado</button>
     <button class="btn ghost" id="clearCache">Vaciar caché de extracciones</button>
+    <button class="btn ghost" id="wipeAll">🧹 Limpiar memoria</button>
   </div>
 
   <div id="status"></div>
@@ -284,6 +285,18 @@ $("#reset").onclick = () => {
 $("#clearCache").onclick = () => {
   try { localStorage.removeItem(CACHE_KEY); } catch (e) {}
   addMsg("Vacié la caché de extracciones: la próxima vez que subas un PDF o pedido escrito (aunque ya lo hayas procesado antes) se lo vuelvo a mandar a la IA en vez de reusar el resultado guardado.");
+};
+
+$("#wipeAll").onclick = () => {
+  allOrders = []; allErrors = []; lastAgg = null; selected = [];
+  $("#result").innerHTML = ""; $("#status").innerHTML = "";
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(CACHE_KEY);
+  } catch (e) {}
+  fileInput.value = "";
+  renderFiles();
+  addMsg("Limpié toda la memoria: pedido acumulado, cola de pedidos escritos/PDFs y caché de extracciones. Arrancamos de cero.");
 };
 
 function toBase64(file) {

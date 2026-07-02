@@ -115,6 +115,11 @@ pedido-unificado/
   el mismo archivo dos veces y te da **siempre** el mismo resultado. Botón
   <b>Vaciar caché de extracciones</b> para forzar que se vuelva a leer todo de cero
   (por ejemplo si sospechás que alguna extracción quedó mal la primera vez).
+- **🧹 Limpiar memoria:** borra todo de una — pedido acumulado, PDFs/pedidos
+  escritos en cola y caché de extracciones — tanto en memoria como en
+  `localStorage`. Es el reset total; los otros botones ("Vaciar pedido
+  acumulado", "Vaciar caché de extracciones") borran solo una parte si no
+  querés perder el resto.
 - **Formato de los PDFs:** está afinado para tus órdenes "Detalles de la orden #...".
   Si cambian mucho de formato, avisame y ajusto el prompt en `api/extract.js`.
 - **Pedidos escritos:** pensado para el formato "PEDIDO; Nombre" + categorías
