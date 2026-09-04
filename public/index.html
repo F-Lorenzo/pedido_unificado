@@ -138,7 +138,41 @@ const STORAGE_KEY = "pedidoUnificado.v1";
 const STORAGE_TTL_MS = 24 * 60 * 60 * 1000; // el progreso guardado vence a las 24hs de la ultima actividad
 
 const CACHE_KEY = "pedidoUnificado.cache.v1";
-const PROMPT_VERSION = "v1"; // subir este numero cuando cambie el prompt en api/extract.js, para invalidar la cache vieja
+const CACHE_VERSION_KEY = "pedidoUnificado.cache.version";
+const CACHE_MAX_ENTRADAS = 400; // podamos la cache para no reventar localStorage (~5MB)
+
+// Vercel corta los request de mas de 4,5MB. El PDF viaja en base64 (1,33x su
+// tamaño real), asi que el limite util ronda los 3,3MB de PDF.
+const MAX_PDF_BYTES = 3.3 * 1024 * 1024;
+
+// Version de extraccion: la calcula el backend hasheando el modelo y los
+// prompts, y se la pedimos al cargar. Si cambia, la cache vieja se descarta
+// sola (antes era una constante manual que habia que acordarse de subir).
+let PROMPT_VERSION = null;
+try { PROMPT_VERSION = localStorage.getItem(CACHE_VERSION_KEY); } catch (e) {}
+
+async function sincronizarVersion() {
+  try {
+    const resp = await fetch("/api/extract", { method: "GET" });
+    if (!resp.ok) return;
+    const { promptVersion } = await resp.json();
+    if (!promptVersion) return;
+    aplicarVersion(promptVersion);
+  } catch (e) {
+    // Sin red no podemos confirmar la version: seguimos con la ultima
+    // conocida (o sin cache, si nunca la supimos).
+  }
+}
+
+function aplicarVersion(promptVersion) {
+  if (PROMPT_VERSION === promptVersion) return;
+  // Cambiaron los prompts o el modelo: lo cacheado ya no representa lo que la
+  // IA devolveria hoy, asi que se descarta. (Tambien limpia las entradas de
+  // la version manual vieja, que con la clave nueva ya nunca se acertarian.)
+  try { localStorage.removeItem(CACHE_KEY); } catch (e) {}
+  PROMPT_VERSION = promptVersion;
+  try { localStorage.setItem(CACHE_VERSION_KEY, promptVersion); } catch (e) {}
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -149,6 +183,7 @@ function sleep(ms) {
 // corridas con los mismos PDFs dan exactamente el mismo resultado la segunda
 // vez (no dependemos de que la IA sea 100% deterministica sola).
 async function hashContenido(str) {
+  if (!PROMPT_VERSION) return null; // sin version confirmada no cacheamos nada
   const enc = new TextEncoder().encode(PROMPT_VERSION + "|" + str);
   const buf = await crypto.subtle.digest("SHA-256", enc);
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -167,6 +202,15 @@ function guardarEnCache(hash, orden) {
   try {
     const cache = leerCache();
     cache[hash] = orden;
+    // Cada acierto de cache es una llamada a la IA que no se paga, asi que
+    // conviene que la cache siga funcionando: si crece sin limite,
+    // localStorage se llena, setItem empieza a fallar en silencio y se
+    // vuelve a pagar todo. Podamos las entradas mas viejas (los objetos
+    // mantienen su orden de insercion).
+    const claves = Object.keys(cache);
+    if (claves.length > CACHE_MAX_ENTRADAS) {
+      claves.slice(0, claves.length - CACHE_MAX_ENTRADAS).forEach((k) => delete cache[k]);
+    }
     localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
   } catch (e) {
     // localStorage lleno/deshabilitado: no es critico, seguimos sin cachear.
@@ -331,26 +375,36 @@ function setButtonsDisabled(disabled) {
 async function fetchExtract(files) {
   let ultimoError = null;
   for (let intento = 0; intento <= NETWORK_RETRIES; intento++) {
+    let resp, raw;
     try {
-      const resp = await fetch("/api/extract", {
+      resp = await fetch("/api/extract", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ files })
       });
-      const data = await resp.json();
-      if (!resp.ok) {
-        // Problema de configuracion del servidor (ej. falta la API key):
-        // no es culpa de este archivo y va a fallar con todos igual.
-        const err = new Error(data.error || "Error del servidor");
-        err.fatal = true;
-        throw err;
-      }
-      return data;
+      raw = await resp.text();
     } catch (e) {
-      if (e.fatal) throw e;
+      // Solo un fetch caido llega aca: eso si es transitorio y se reintenta.
       ultimoError = e;
       if (intento < NETWORK_RETRIES) await sleep(2000 * (intento + 1));
+      continue;
     }
+
+    // Desde aca el servidor contesto algo: reintentar no cambiaria nada.
+    if (resp.status === 413) {
+      throw new Error("El archivo es demasiado pesado para subirlo (el máximo es de unos 3,3 MB).");
+    }
+    let data = null;
+    try { data = JSON.parse(raw); } catch (e) { /* respuesta no-JSON */ }
+    if (!resp.ok) {
+      // Problema de configuracion del servidor (ej. falta la API key):
+      // no es culpa de este archivo y va a fallar con todos igual.
+      const err = new Error((data && data.error) || "El servidor rechazó el archivo.");
+      err.fatal = !data || !!data.error;
+      throw err;
+    }
+    if (!data) throw new Error("El servidor devolvió una respuesta que no se pudo leer.");
+    return data;
   }
   const err = new Error("Se cortó la conexión mientras se procesaba (puede pasar si la computadora se suspende o se corta el wifi).");
   err.technicalDetail = String((ultimoError && ultimoError.message) || "");
@@ -363,13 +417,40 @@ async function procesar(modo) {
   setButtonsDisabled(true);
   $("#result").innerHTML = "";
 
+  // Sin version confirmada no se cachea nada, asi que la esperamos antes de
+  // arrancar en vez de procesar la primera tanda sin cache.
+  if (!PROMPT_VERSION) await sincronizarVersion();
+
   if (modo === "nuevo") { allOrders = []; allErrors = []; }
 
   const nuevasOrdenes = [];
   const nuevosErrores = [];
   const pendientes = []; // los que fallaron: quedan en la cola para reintentar
+  const duplicadas = []; // ordenes que ya estaban sumadas: se descartan
+  const procesadosOk = []; // nombres que salieron bien, para limpiar errores viejos
   const startTs = performance.now();
   let fatal = null;
+
+  // Identidades ya sumadas al acumulado. Sin esto, volver a soltar un PDF ya
+  // procesado lo suma de nuevo y duplica las cantidades del pedido a fabrica
+  // — y encima en silencio, porque con la cache es instantaneo.
+  const yaSumadas = new Set();
+  allOrders.forEach((o) => {
+    const id = PedidoAgg.ordenId(o);
+    if (id) yaSumadas.add(id);
+  });
+
+  // Suma una orden solo si no estaba ya en el acumulado.
+  function agregarOrden(orden, hash, nombre) {
+    if (hash) orden.__hash = hash;
+    const id = PedidoAgg.ordenId(orden);
+    if (id && yaSumadas.has(id)) {
+      duplicadas.push({ nombre, numeroOrden: orden.numeroOrden });
+      return;
+    }
+    if (id) yaSumadas.add(id);
+    nuevasOrdenes.push(orden);
+  }
 
   // Uno por uno, en orden: mas lento que en paralelo pero predecible, y si
   // un PDF falla no afecta a los demas — se anota como error, queda en la
@@ -386,6 +467,12 @@ async function procesar(modo) {
     $("#status").innerHTML = `<div class="note"><span class="spin"></span> Procesando ${i + 1}/${tanda.length}: ${esc(s.name)}… (tiempo estimado restante: ~${etaTxt})</div>`;
 
     try {
+      // Cortamos antes de subir: el request no entraria y el archivo pesado
+      // viajaria al pedo (y varias veces, por los reintentos).
+      if (s.kind === "pdf" && s.file.size > MAX_PDF_BYTES) {
+        throw new Error(`El PDF pesa ${(s.file.size / 1024 / 1024).toFixed(1)} MB y el máximo es 3,3 MB.`);
+      }
+
       const contenidoParaHash = s.kind === "texto" ? s.contenido : await toBase64(s.file);
       let hash = null;
       try { hash = await hashContenido(contenidoParaHash); } catch (e) { /* sin hash, seguimos sin cache */ }
@@ -394,7 +481,8 @@ async function procesar(modo) {
       if (cache && cache[hash]) {
         // Mismo archivo/texto ya procesado antes: reusamos el resultado tal
         // cual, sin volver a llamar a la IA (y sin pausa, no hubo request).
-        nuevasOrdenes.push(cache[hash]);
+        agregarOrden(cache[hash], hash, s.name);
+        procesadosOk.push(s.name);
         continue;
       }
 
@@ -402,11 +490,14 @@ async function procesar(modo) {
         ? { name: s.name, tipo: "texto", contenido: s.contenido }
         : { name: s.name, tipo: "pdf", dataBase64: contenidoParaHash }];
       const data = await fetchExtract(files);
+      if (data.promptVersion) aplicarVersion(data.promptVersion);
 
-      nuevasOrdenes.push(...(data.orders || []));
+      (data.orders || []).forEach((o, idx) => agregarOrden(o, idx === 0 ? hash : null, s.name));
       if (data.errors && data.errors.length) {
         nuevosErrores.push(...data.errors);
         pendientes.push(s);
+      } else {
+        procesadosOk.push(s.name);
       }
 
       if (hash && data.orders && data.orders[0]) guardarEnCache(hash, data.orders[0]);
@@ -428,10 +519,25 @@ async function procesar(modo) {
 
   // Pase lo que pase, lo que SI se proceso se guarda y se muestra.
   allOrders.push(...nuevasOrdenes);
+
+  // Un archivo que fallo antes y ahora anduvo no puede seguir figurando en
+  // "No se pudieron leer": ahora que reintentar es el flujo normal, el error
+  // viejo quedaba pegado al lado de la orden ya sumada.
+  if (procesadosOk.length) {
+    const resueltos = new Set(procesadosOk);
+    allErrors = allErrors.filter((e) => !resueltos.has(e.archivo));
+  }
   allErrors.push(...nuevosErrores);
 
   selected = pendientes;
   fileInput.value = "";
+
+  if (duplicadas.length) {
+    const detalle = duplicadas
+      .map((d) => (d.numeroOrden ? `orden #${esc(String(d.numeroOrden))}` : esc(d.nombre)))
+      .join(", ");
+    addMsg(`⚠️ Salteé <b>${duplicadas.length}</b> que ya estaba(n) en el pedido acumulado (${detalle}). No las volví a sumar para no duplicar las cantidades.`);
+  }
 
   if (allOrders.length) {
     const agg = PedidoAgg.aggregate(allOrders);
@@ -505,8 +611,12 @@ function render(agg, errors, nOrders, info) {
     <table><thead><tr><th>Orden</th><th>Cliente</th><th>Fecha</th>
       <th class="num">Subtotal (bruto)</th><th class="num">Total cobrado</th></tr></thead><tbody>`;
   agg.ordenes.forEach((o) => {
+    // Los pedidos escritos no traen precios: mostrarlos como "$0,00" se lee
+    // como si la lectura hubiera fallado.
+    const sub = o.sinPrecios ? '<span class="muted">sin precios</span>' : f(o.subtotal);
+    const tot = o.sinPrecios ? '<span class="muted">—</span>' : f(o.total);
     html += `<tr><td>#${esc(o.numeroOrden)}</td><td>${esc(o.cliente)}</td><td>${esc(o.fecha)}</td>
-      <td class="num">${f(o.subtotal)}</td><td class="num">${f(o.total)}</td></tr>`;
+      <td class="num">${sub}</td><td class="num">${tot}</td></tr>`;
   });
   html += `<tr><td colspan="3" style="text-align:right;font-weight:600">TOTALES</td>
     <td class="num"><b>${f(agg.facturacionBruta)}</b></td>
@@ -620,6 +730,10 @@ window.exportPDF = function () {
   // acumulado" si se restauro un pedido) aunque no haya textos en cola.
   renderFiles();
 })();
+
+// Confirma con el backend que la cache guardada corresponde a los prompts
+// actuales; si cambiaron, la descarta sola.
+sincronizarVersion();
 </script>
 </body>
 </html>

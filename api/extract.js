@@ -4,7 +4,12 @@
 // La API key NUNCA se expone al navegador: vive solo aca, en el servidor,
 // leida desde la variable de entorno OPENAI_API_KEY.
 
-import pdfParse from "pdf-parse";
+// Importamos lib/pdf-parse.js y NO el index.js del paquete: ese index tiene
+// un "modo debug" (isDebugMode = !module.parent) que, al importarlo como ESM,
+// se activa e intenta leer un PDF de prueba relativo al cwd -> ENOENT y la
+// funcion entera se cae al arrancar. Entrando por lib/ salteamos ese codigo.
+import pdfParse from "pdf-parse/lib/pdf-parse.js";
+import { createHash } from "crypto";
 
 // gpt-4.1-nano en vez de gpt-5-nano: cuesta un poco mas pero soporta
 // temperature=0 (salida deterministica de verdad), a diferencia de la
@@ -108,12 +113,25 @@ REGLAS IMPORTANTES:
 TEXTO DEL PEDIDO:
 `;
 
+// Version de extraccion: hash del modelo + los dos prompts. El cliente la usa
+// como parte de la clave de cache, asi que cualquier cambio de prompt invalida
+// solo lo cacheado. Antes era una constante manual ("v1") que habia que
+// acordarse de subir: si no, un prompt corregido seguia devolviendo para
+// siempre los resultados viejos, sin ningun sintoma.
+const PROMPT_VERSION = createHash("sha256")
+  .update(MODEL + "\n" + PROMPT_PDF + "\n" + PROMPT_TEXTO)
+  .digest("hex")
+  .slice(0, 12);
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
-    let data = "";
-    req.on("data", (c) => (data += c));
+    // Juntamos Buffers y recien al final decodificamos: concatenar como
+    // string (data += chunk) parte los caracteres multibyte que caen justo
+    // en el borde entre dos chunks y rompe los acentos (y con ellos el JSON).
+    const chunks = [];
+    req.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
     req.on("end", () => {
-      try { resolve(JSON.parse(data || "{}")); }
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}")); }
       catch (e) { reject(e); }
     });
     req.on("error", reject);
@@ -126,11 +144,12 @@ function sleep(ms) {
 
 // Un 429 de OpenAI puede ser dos cosas muy distintas:
 //  - "te pasaste del limite por minuto": transitorio, conviene reintentar.
-//  - "no tenes saldo" (insufficient_quota): permanente. Reintentarlo solo
-//    quema ~48s por archivo y termina igual en error, con un mensaje que
-//    ademas despista ("capacidad maxima momentanea").
-// Por eso lo distinguimos: sin saldo se corta al toque y se avisa claro.
-function esFaltaDeSaldo(rawText) {
+//  - problema de cuenta/cuota (insufficient_quota): permanente, reintentarlo
+//    solo quema tiempo y termina igual en error.
+// Por eso lo distinguimos: el permanente corta al toque.
+// El mensaje al usuario es generico a proposito (no expone el estado de la
+// cuenta); el detalle real queda en los logs de Vercel para el admin.
+function esProblemaDeCuenta(rawText) {
   return /insufficient_quota|billing_hard_limit_reached|exceeded your current quota/i.test(rawText || "");
 }
 
@@ -138,7 +157,7 @@ function esFaltaDeSaldo(rawText) {
 // entender (se muestra tal cual en la web, sin JSON, codigos de status ni
 // referencias a limites de capa gratuita).
 function friendlyApiError(status, rawText) {
-  if (esFaltaDeSaldo(rawText)) return "La cuenta del servicio de IA se quedó sin saldo. Hay que recargarla para poder seguir procesando.";
+  if (esProblemaDeCuenta(rawText)) return "Error en el procesamiento del archivo. Se recomienda mirar el panel de administración.";
   if (status === 429) return "El motor de inteligencia artificial alcanzó su capacidad máxima momentánea.";
   if (status === 503) return "El servicio de IA no está disponible en este momento.";
   if (status === 401 || status === 403) return "No se pudo autenticar con el servicio de IA (revisar la API key configurada en Vercel).";
@@ -159,11 +178,17 @@ function apiError(status, rawText) {
 const RETRY_BUDGET_MS = 25000;
 const MAX_ATTEMPTS = 5;
 
+// Techo de salida. Una orden real ronda los 600 tokens; sin tope, una
+// respuesta desbocada puede correr hasta el maximo del modelo, comerse la
+// funcion entera (60s en Hobby) y costar ~30 veces mas que un archivo normal.
+const MAX_OUTPUT_TOKENS = 4000;
+
 async function callOpenAI(apiKey, promptText, attempt = 1, spentMs = 0) {
   const payload = {
     model: MODEL,
     temperature: 0, // salida deterministica: mismo PDF, mismo resultado
     seed: 20260701, // fijo, mejora el "mejor esfuerzo" de determinismo de OpenAI (no es garantia total)
+    max_tokens: MAX_OUTPUT_TOKENS,
     response_format: { type: "json_object" },
     messages: [
       { role: "user", content: promptText }
@@ -181,8 +206,8 @@ async function callOpenAI(apiKey, promptText, attempt = 1, spentMs = 0) {
 
   if (!resp.ok) {
     const txt = await resp.text();
-    // Sin saldo no tiene sentido reintentar: el error es permanente.
-    const retryable = (resp.status === 429 && !esFaltaDeSaldo(txt)) || resp.status === 503;
+    // Un problema de cuenta es permanente: reintentarlo no sirve de nada.
+    const retryable = (resp.status === 429 && !esProblemaDeCuenta(txt)) || resp.status === 503;
     if (retryable && attempt < MAX_ATTEMPTS && spentMs < RETRY_BUDGET_MS) {
       // OpenAI suele mandar el header "retry-after"; si no viene, buscamos
       // una pista en el cuerpo, y si tampoco hay usamos backoff creciente.
@@ -226,7 +251,15 @@ async function extractOne(apiKey, item) {
   }
 
   const json = await callOpenAI(apiKey, promptText);
-  const content = json?.choices?.[0]?.message?.content || "";
+  const choice = json?.choices?.[0];
+  // Si se corto por el techo de tokens, el JSON viene incompleto: conviene
+  // decirlo tal cual en vez de "no se pudo leer la respuesta".
+  if (choice?.finish_reason === "length") {
+    const err = new Error("El pedido es demasiado largo para procesarlo de una vez. Probá partirlo en dos.");
+    err.technicalDetail = `finish_reason=length (max_tokens=${MAX_OUTPUT_TOKENS})`;
+    throw err;
+  }
+  const content = choice?.message?.content || "";
   let parsed;
   try {
     parsed = JSON.parse(content);
@@ -251,6 +284,13 @@ async function extractOne(apiKey, item) {
 }
 
 export default async function handler(req, res) {
+  // El cliente pregunta la version de extraccion al cargar la pagina para
+  // saber si su cache sigue siendo valida.
+  if (req.method === "GET") {
+    res.status(200).json({ promptVersion: PROMPT_VERSION });
+    return;
+  }
+
   if (req.method !== "POST") {
     res.status(405).json({ error: "Usa POST" });
     return;
@@ -288,5 +328,5 @@ export default async function handler(req, res) {
     }
   }
 
-  res.status(200).json({ orders, errors });
+  res.status(200).json({ orders, errors, promptVersion: PROMPT_VERSION });
 }

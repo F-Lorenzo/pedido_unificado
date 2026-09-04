@@ -86,11 +86,23 @@ pedido-unificado/
 ├─ public/
 │  ├─ index.html        ← la web (chat, subida, tabla, exportar PDF/CSV)
 │  └─ aggregate.js      ← lógica de unificación (suma por producto+variante)
+├─ test/                ← tests (se corren con `npm test`, sin instalar nada extra)
 ├─ package.json
 ├─ vercel.json
 ├─ .env.example
 └─ README.md
 ```
+
+## Tests
+
+```bash
+npm install
+npm test
+```
+
+No pegan contra OpenAI: la API se mockea, así que corren gratis y en segundos.
+Cubren el parseo de importes en formato argentino, la facturación, el dedupe de
+órdenes y el manejo de errores del backend.
 
 ---
 
@@ -106,6 +118,12 @@ pedido-unificado/
   todavía no procesaste NO se guardan (son pesados para `localStorage`), así que si
   se recarga la página antes de darle a "Sumar"/"Armar pedido", hay que volver a
   soltarlos.
+- **Nunca se suma dos veces la misma orden:** si volvés a soltar un PDF que ya
+  estaba en el pedido acumulado (o pegás dos veces el mismo texto), se **saltea** y
+  te avisa cuál fue. Sin esto, re-soltar un PDF duplicaba las cantidades del pedido
+  a fábrica en silencio — y con la caché era instantáneo, así que ni se notaba. Las
+  órdenes se identifican por su número; los pedidos escritos, que no tienen número,
+  por el hash de su contenido exacto.
 - **Caché de extracciones por archivo:** aunque `temperature=0` reduce mucho la
   variación, OpenAI no garantiza una salida 100% idéntica siempre (es una limitación
   conocida de su API, no de este código). Por eso cada PDF/pedido escrito se
@@ -115,6 +133,15 @@ pedido-unificado/
   el mismo archivo dos veces y te da **siempre** el mismo resultado. Botón
   <b>Vaciar caché de extracciones</b> para forzar que se vuelva a leer todo de cero
   (por ejemplo si sospechás que alguna extracción quedó mal la primera vez).
+  La caché **se invalida sola** cuando cambian los prompts o el modelo: el backend
+  publica un hash de ambos y el navegador descarta lo guardado si no coincide. (Antes
+  era un número que había que subir a mano en `PROMPT_VERSION`; si uno se olvidaba,
+  un prompt corregido seguía devolviendo para siempre los resultados viejos.) También
+  se podan las entradas más antiguas para que `localStorage` no se llene y la caché
+  deje de funcionar sin avisar.
+- **Tamaño máximo por PDF: ~3,3 MB.** Vercel corta los request de más de 4,5 MB y el
+  PDF viaja en base64 (1,33x su tamaño), así que la web lo frena antes de subirlo y
+  te dice cuánto pesa, en vez de intentarlo y fallar con un error confuso.
 - **🧹 Limpiar memoria:** borra todo de una — pedido acumulado, PDFs/pedidos
   escritos en cola y caché de extracciones — tanto en memoria como en
   `localStorage`. Es el reset total; los otros botones ("Vaciar pedido
@@ -164,10 +191,20 @@ pedido-unificado/
   navegador tira `ERR_NETWORK_IO_SUSPENDED`), la web reintenta sola un par de veces
   antes de dar el archivo por fallado. Ojo con dejar la notebook a batería
   suspendiéndose en medio de una tanda larga.
-- **Si la cuenta de OpenAI se queda sin saldo:** el aviso lo dice explícitamente
-  ("se quedó sin saldo, hay que recargarla") y falla al toque, en vez de quedarse
-  ~48s reintentando algo que no puede funcionar. Los límites por minuto (que sí son
+- **Si hay un problema con la cuenta de OpenAI** (cuota agotada, sin saldo): al
+  usuario se le muestra un mensaje **genérico** — *"Error en el procesamiento del
+  archivo. Se recomienda mirar el panel de administración"* — sin exponer el estado
+  de la cuenta. El motivo real queda en los **logs de la función en Vercel**, que es
+  donde el admin lo tiene que mirar. Igual falla al toque, sin quedarse ~48s
+  reintentando algo que no puede funcionar. Los límites por minuto (que sí son
   transitorios) se siguen reintentando, con un tope total de 25s por archivo.
+- **Errores que se resuelven, desaparecen:** si un archivo falla y al reintentarlo
+  anda, el aviso viejo se borra de "No se pudieron leer" en vez de quedar pegado al
+  lado de la orden ya sumada.
+- **Techo de salida por archivo** (`MAX_OUTPUT_TOKENS`, 4000): una orden real usa
+  ~600 tokens. Sin tope, una respuesta desbocada podía comerse la función entera y
+  costar decenas de veces más que un archivo normal. Si un pedido de verdad no entra,
+  la web te dice que lo partas en dos.
 - **Vercel `maxDuration: 300`** (en `vercel.json`) requiere plan **Pro** — en el plan
   Hobby las funciones se cortan a los 60s. Como se procesa **de a un archivo por
   request**, el límite que importa es el de un solo PDF, no el de la tanda entera: por

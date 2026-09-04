@@ -4,6 +4,7 @@
   "description": "Sube PDFs de ordenes, unifica pedidos por producto+variante y suma la facturacion. Usa GPT-4.1 Nano (OpenAI).",
   "private": true,
   "scripts": {
+    "test": "node test/aggregate.test.mjs && node test/extract.test.mjs && node test/frontend.test.mjs",
     "deploy": "vercel --prod"
   },
   "engines": {
