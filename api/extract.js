@@ -124,10 +124,21 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Un 429 de OpenAI puede ser dos cosas muy distintas:
+//  - "te pasaste del limite por minuto": transitorio, conviene reintentar.
+//  - "no tenes saldo" (insufficient_quota): permanente. Reintentarlo solo
+//    quema ~48s por archivo y termina igual en error, con un mensaje que
+//    ademas despista ("capacidad maxima momentanea").
+// Por eso lo distinguimos: sin saldo se corta al toque y se avisa claro.
+function esFaltaDeSaldo(rawText) {
+  return /insufficient_quota|billing_hard_limit_reached|exceeded your current quota/i.test(rawText || "");
+}
+
 // Convierte errores tecnicos de la API en un mensaje que cualquiera pueda
 // entender (se muestra tal cual en la web, sin JSON, codigos de status ni
 // referencias a limites de capa gratuita).
 function friendlyApiError(status, rawText) {
+  if (esFaltaDeSaldo(rawText)) return "La cuenta del servicio de IA se quedó sin saldo. Hay que recargarla para poder seguir procesando.";
   if (status === 429) return "El motor de inteligencia artificial alcanzó su capacidad máxima momentánea.";
   if (status === 503) return "El servicio de IA no está disponible en este momento.";
   if (status === 401 || status === 403) return "No se pudo autenticar con el servicio de IA (revisar la API key configurada en Vercel).";
@@ -141,7 +152,14 @@ function apiError(status, rawText) {
   return err;
 }
 
-async function callOpenAI(apiKey, promptText, attempt = 1) {
+// Presupuesto total de espera por archivo. La funcion serverless tiene un
+// techo de ejecucion (60s en el plan Hobby de Vercel; el maxDuration de 300
+// de vercel.json solo aplica en Pro), asi que los reintentos no pueden
+// comerse todo: dejamos margen para la llamada que si funcione.
+const RETRY_BUDGET_MS = 25000;
+const MAX_ATTEMPTS = 5;
+
+async function callOpenAI(apiKey, promptText, attempt = 1, spentMs = 0) {
   const payload = {
     model: MODEL,
     temperature: 0, // salida deterministica: mismo PDF, mismo resultado
@@ -163,19 +181,22 @@ async function callOpenAI(apiKey, promptText, attempt = 1) {
 
   if (!resp.ok) {
     const txt = await resp.text();
-    const retryable = resp.status === 429 || resp.status === 503;
-    if (retryable && attempt < 5) {
+    // Sin saldo no tiene sentido reintentar: el error es permanente.
+    const retryable = (resp.status === 429 && !esFaltaDeSaldo(txt)) || resp.status === 503;
+    if (retryable && attempt < MAX_ATTEMPTS && spentMs < RETRY_BUDGET_MS) {
       // OpenAI suele mandar el header "retry-after"; si no viene, buscamos
       // una pista en el cuerpo, y si tampoco hay usamos backoff creciente.
+      const restante = RETRY_BUDGET_MS - spentMs;
       const headerWait = parseFloat(resp.headers.get("retry-after") || "");
       const m = !isNaN(headerWait) ? null : txt.match(/try again in ([\d.]+)s/i);
-      const waitMs = !isNaN(headerWait)
-        ? Math.min(Math.ceil(headerWait * 1000) + 500, 25000)
+      const pedido = !isNaN(headerWait)
+        ? Math.ceil(headerWait * 1000) + 500
         : m
-          ? Math.min(Math.ceil(parseFloat(m[1]) * 1000) + 500, 25000)
-          : Math.min(4000 * 2 ** (attempt - 1), 20000);
+          ? Math.ceil(parseFloat(m[1]) * 1000) + 500
+          : 3000 * 2 ** (attempt - 1);
+      const waitMs = Math.min(pedido, restante);
       await sleep(waitMs);
-      return callOpenAI(apiKey, promptText, attempt + 1);
+      return callOpenAI(apiKey, promptText, attempt + 1, spentMs + waitMs);
     }
     throw apiError(resp.status, txt);
   }
@@ -263,8 +284,7 @@ export default async function handler(req, res) {
     } catch (e) {
       if (e.technicalDetail) console.error(`Error procesando ${f.name}: ${e.technicalDetail}`);
       const msg = e.message || "No se pudo procesar este archivo.";
-      const reintento = f.tipo === "texto" ? "Volvé a agregarlo manualmente." : "Volvé a subirlo manualmente.";
-      errors.push({ archivo: f.name, error: `${msg} ${reintento}` });
+      errors.push({ archivo: f.name, error: msg });
     }
   }
 

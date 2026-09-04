@@ -132,6 +132,7 @@ let allErrors = [];
 
 const ESTIMATED_SECONDS_PER_PDF = 3; // estimacion inicial por PDF (lectura + llamada a IA + pausa entre archivos), se recalcula con el promedio real a medida que procesa
 const PACING_DELAY_MS = 1200; // pausa entre PDFs (limite de la cuenta paga de OpenAI es mucho mas alto, no hace falta tanto margen)
+const NETWORK_RETRIES = 2; // reintentos ante un corte de red del navegador (PC suspendida, wifi caido)
 
 const STORAGE_KEY = "pedidoUnificado.v1";
 const STORAGE_TTL_MS = 24 * 60 * 60 * 1000; // el progreso guardado vence a las 24hs de la ultima actividad
@@ -322,6 +323,40 @@ function setButtonsDisabled(disabled) {
   $("#reset").disabled = disabled || allOrders.length === 0;
 }
 
+// Manda UN archivo al backend. Si el navegador corta la conexion (la
+// computadora se suspende, se cae el wifi: net::ERR_NETWORK_IO_SUSPENDED,
+// "Failed to fetch") reintenta, porque es transitorio: cuando la maquina
+// despierta vuelve a andar. Un error devuelto por el servidor NO se
+// reintenta acá — ya trae su propio mensaje.
+async function fetchExtract(files) {
+  let ultimoError = null;
+  for (let intento = 0; intento <= NETWORK_RETRIES; intento++) {
+    try {
+      const resp = await fetch("/api/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files })
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        // Problema de configuracion del servidor (ej. falta la API key):
+        // no es culpa de este archivo y va a fallar con todos igual.
+        const err = new Error(data.error || "Error del servidor");
+        err.fatal = true;
+        throw err;
+      }
+      return data;
+    } catch (e) {
+      if (e.fatal) throw e;
+      ultimoError = e;
+      if (intento < NETWORK_RETRIES) await sleep(2000 * (intento + 1));
+    }
+  }
+  const err = new Error("Se cortó la conexión mientras se procesaba (puede pasar si la computadora se suspende o se corta el wifi).");
+  err.technicalDetail = String((ultimoError && ultimoError.message) || "");
+  throw err;
+}
+
 async function procesar(modo) {
   // modo: "sumar" o "nuevo"
   if (selected.length === 0) return;
@@ -332,22 +367,25 @@ async function procesar(modo) {
 
   const nuevasOrdenes = [];
   const nuevosErrores = [];
+  const pendientes = []; // los que fallaron: quedan en la cola para reintentar
   const startTs = performance.now();
+  let fatal = null;
 
-  try {
-    // Uno por uno, en orden: mas lento que en paralelo pero predecible, y si
-    // un PDF falla no afecta a los demas (solo queda marcado para volver a
-    // subirlo, el resto sigue procesandose).
-    const estimacionInicial = formatDuration(selected.length * ESTIMATED_SECONDS_PER_PDF);
-    for (let i = 0; i < selected.length; i++) {
-      const s = selected[i];
-      const elapsedS = (performance.now() - startTs) / 1000;
-      const restantes = selected.length - i;
-      const etaTxt = i === 0
-        ? estimacionInicial
-        : formatDuration((elapsedS / i) * restantes);
-      $("#status").innerHTML = `<div class="note"><span class="spin"></span> Procesando ${i + 1}/${selected.length}: ${esc(s.name)}… (tiempo estimado restante: ~${etaTxt})</div>`;
+  // Uno por uno, en orden: mas lento que en paralelo pero predecible, y si
+  // un PDF falla no afecta a los demas — se anota como error, queda en la
+  // cola y el resto de la tanda sigue y se muestra igual.
+  const estimacionInicial = formatDuration(selected.length * ESTIMATED_SECONDS_PER_PDF);
+  const tanda = selected.slice();
+  for (let i = 0; i < tanda.length; i++) {
+    const s = tanda[i];
+    const elapsedS = (performance.now() - startTs) / 1000;
+    const restantes = tanda.length - i;
+    const etaTxt = i === 0
+      ? estimacionInicial
+      : formatDuration((elapsedS / i) * restantes);
+    $("#status").innerHTML = `<div class="note"><span class="spin"></span> Procesando ${i + 1}/${tanda.length}: ${esc(s.name)}… (tiempo estimado restante: ~${etaTxt})</div>`;
 
+    try {
       const contenidoParaHash = s.kind === "texto" ? s.contenido : await toBase64(s.file);
       let hash = null;
       try { hash = await hashContenido(contenidoParaHash); } catch (e) { /* sin hash, seguimos sin cache */ }
@@ -363,39 +401,50 @@ async function procesar(modo) {
       const files = [s.kind === "texto"
         ? { name: s.name, tipo: "texto", contenido: s.contenido }
         : { name: s.name, tipo: "pdf", dataBase64: contenidoParaHash }];
-      const resp = await fetch("/api/extract", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ files })
-      });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data.error || "Error del servidor");
+      const data = await fetchExtract(files);
 
       nuevasOrdenes.push(...(data.orders || []));
-      nuevosErrores.push(...(data.errors || []));
+      if (data.errors && data.errors.length) {
+        nuevosErrores.push(...data.errors);
+        pendientes.push(s);
+      }
 
       if (hash && data.orders && data.orders[0]) guardarEnCache(hash, data.orders[0]);
 
       // Pequeña pausa entre archivos para que el servicio de IA aguante toda
       // la tanda sin cortarse (no hace falta despues del ultimo).
-      if (i < selected.length - 1) await sleep(PACING_DELAY_MS);
+      if (i < tanda.length - 1) await sleep(PACING_DELAY_MS);
+    } catch (e) {
+      if (e.fatal) {
+        // Falla global: no tiene sentido intentar con los que faltan.
+        fatal = e;
+        pendientes.push(...tanda.slice(i));
+        break;
+      }
+      nuevosErrores.push({ archivo: s.name, error: `${e.message} Quedó en la cola: probá de nuevo.` });
+      pendientes.push(s);
     }
+  }
 
-    allOrders.push(...nuevasOrdenes);
-    allErrors.push(...nuevosErrores);
+  // Pase lo que pase, lo que SI se proceso se guarda y se muestra.
+  allOrders.push(...nuevasOrdenes);
+  allErrors.push(...nuevosErrores);
 
+  selected = pendientes;
+  fileInput.value = "";
+
+  if (allOrders.length) {
     const agg = PedidoAgg.aggregate(allOrders);
     lastAgg = agg;
     render(agg, allErrors, allOrders.length, { nuevasEnEstaTanda: nuevasOrdenes.length, modo });
-    $("#status").innerHTML = "";
-
-    selected = []; renderFiles();
-    fileInput.value = "";
-  } catch (e) {
-    $("#status").innerHTML = `<div class="err">⚠️ ${e.message}</div>`;
-  } finally {
-    setButtonsDisabled(false);
+  } else if (allErrors.length) {
+    let h = `<div class="section"><h2>⚠️ No se pudieron leer (${allErrors.length})</h2>`;
+    allErrors.forEach((e) => { h += `<div class="err"><b>${esc(e.archivo)}</b>: ${esc(e.error)}</div>`; });
+    $("#result").innerHTML = h + `</div>`;
   }
+
+  $("#status").innerHTML = fatal ? `<div class="err">⚠️ ${esc(fatal.message)}</div>` : "";
+  renderFiles(); // refresca chips (quedan los que fallaron), botones y lo guardado
 }
 
 $("#goSum").onclick = () => procesar("sumar");
@@ -477,7 +526,7 @@ function render(agg, errors, nOrders, info) {
   // Errores
   if (errors.length) {
     html += `<div class="section"><h2>⚠️ No se pudieron leer (${errors.length})</h2>
-      <div class="muted" style="font-size:12.5px;margin-bottom:6px">Volvé a soltar estos archivos en la zona de arriba para reintentarlos.</div>`;
+      <div class="muted" style="font-size:12.5px;margin-bottom:6px">Estos quedaron en la cola de arriba: apretá de nuevo "Sumar al pedido actual" para reintentarlos (lo que ya se procesó bien no se vuelve a pedir a la IA).</div>`;
     errors.forEach((e) => { html += `<div class="err"><b>${esc(e.archivo)}</b>: ${esc(e.error)}</div>`; });
     html += `</div>`;
   }

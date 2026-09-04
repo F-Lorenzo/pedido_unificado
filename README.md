@@ -154,10 +154,23 @@ pedido-unificado/
   intentos) respetando el tiempo de espera que indica la API. La web muestra
   un tiempo estimado restante (arranca en ~3s por PDF y se ajusta con el
   promedio real a medida que van terminando).
-- **Si un PDF o pedido escrito falla:** no frena a los demás. Queda listado aparte en
-  "⚠️ No se pudieron leer" con el motivo en lenguaje simple y neutro (sin
-  exponer detalles internos como el proveedor de IA o sus límites), y solo
-  hay que volver a agregarlo.
+- **Si un PDF o pedido escrito falla:** no frena a los demás **y no se pierde lo ya
+  procesado**. El archivo queda listado en "⚠️ No se pudieron leer" con el motivo en
+  lenguaje simple y neutro, y además **se queda en la cola de arriba**: solo hay que
+  volver a apretar "Sumar al pedido actual" para reintentarlo (los que ya salieron
+  bien se reusan de la caché, no se vuelven a mandar a la IA). Los PDFs que sí se
+  leyeron en esa misma tanda se suman al pedido igual.
+- **Si se corta la conexión** (la computadora se suspende, se cae el wifi: el
+  navegador tira `ERR_NETWORK_IO_SUSPENDED`), la web reintenta sola un par de veces
+  antes de dar el archivo por fallado. Ojo con dejar la notebook a batería
+  suspendiéndose en medio de una tanda larga.
+- **Si la cuenta de OpenAI se queda sin saldo:** el aviso lo dice explícitamente
+  ("se quedó sin saldo, hay que recargarla") y falla al toque, en vez de quedarse
+  ~48s reintentando algo que no puede funcionar. Los límites por minuto (que sí son
+  transitorios) se siguen reintentando, con un tope total de 25s por archivo.
 - **Vercel `maxDuration: 300`** (en `vercel.json`) requiere plan **Pro** — en el plan
-  Hobby las funciones se cortan a los 60s. Con tandas grandes de PDFs procesados
-  de a uno, esto puede no alcanzar; si te pasa, subí los PDFs en tandas más chicas.
+  Hobby las funciones se cortan a los 60s. Como se procesa **de a un archivo por
+  request**, el límite que importa es el de un solo PDF, no el de la tanda entera: por
+  eso los reintentos ante límite de la IA tienen un presupuesto total de 25s
+  (`RETRY_BUDGET_MS` en `api/extract.js`), para que siempre quede margen dentro de
+  esos 60s.
