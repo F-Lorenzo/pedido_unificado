@@ -1,16 +1,20 @@
 // Serverless function (Vercel) — recibe PDFs en base64, extrae el texto
-// localmente (pdf-parse) y usa GPT-4.1 Nano (OpenAI) para estructurarlo en JSON.
+// localmente (pdf-parse) y usa un modelo de OpenAI para estructurarlo en JSON.
 //
 // La API key NUNCA se expone al navegador: vive solo aca, en el servidor,
 // leida desde la variable de entorno OPENAI_API_KEY.
 
 import pdfParse from "pdf-parse";
 
-// gpt-4.1-nano en vez de gpt-5-nano: cuesta un poco mas pero soporta
-// temperature=0 (salida deterministica de verdad), a diferencia de la
-// familia gpt-5 que fuerza temperature=1 y puede variar entre corridas
-// con el mismo PDF (deletreo de variantes, cantidades, etc.).
-const MODEL = "gpt-4.1-nano";
+// gpt-4.1-nano fue dado de baja por OpenAI el 23/10/2026 (devuelve 404
+// model_not_found). gpt-5.6-luna es el reemplazo que recomienda OpenAI.
+// Se puede cambiar sin tocar codigo con la variable de entorno OPENAI_MODEL.
+const MODEL = process.env.OPENAI_MODEL || "gpt-5.6-luna";
+// Las familias gpt-5 y o-series solo aceptan la temperatura por defecto (1):
+// mandarles temperature=0 da error 400. Para esas no mandamos temperature ni
+// seed; la cache por archivo del navegador sigue garantizando que el mismo
+// archivo de siempre el mismo resultado.
+const SOPORTA_TEMPERATURA = !/^(gpt-5|o\d)/i.test(MODEL);
 const API_URL = "https://api.openai.com/v1/chat/completions";
 
 // Prompt para ordenes formales extraidas de un PDF (formato "Detalles de la orden #...").
@@ -131,6 +135,7 @@ function friendlyApiError(status, rawText) {
   if (status === 429) return "El motor de inteligencia artificial alcanzó su capacidad máxima momentánea.";
   if (status === 503) return "El servicio de IA no está disponible en este momento.";
   if (status === 401 || status === 403) return "No se pudo autenticar con el servicio de IA (revisar la API key configurada en Vercel).";
+  if (status === 404 && /model_not_found|deprecated/i.test(rawText)) return "El modelo de IA configurado ya no está disponible (revisar OPENAI_MODEL en Vercel).";
   if (status >= 500) return "El servicio de IA tuvo un error interno.";
   return "El servicio de IA no pudo procesar este archivo.";
 }
@@ -144,13 +149,15 @@ function apiError(status, rawText) {
 async function callOpenAI(apiKey, promptText, attempt = 1) {
   const payload = {
     model: MODEL,
-    temperature: 0, // salida deterministica: mismo PDF, mismo resultado
-    seed: 20260701, // fijo, mejora el "mejor esfuerzo" de determinismo de OpenAI (no es garantia total)
     response_format: { type: "json_object" },
     messages: [
       { role: "user", content: promptText }
     ]
   };
+  if (SOPORTA_TEMPERATURA) {
+    payload.temperature = 0; // salida deterministica: mismo PDF, mismo resultado
+    payload.seed = 20260701; // fijo, mejora el "mejor esfuerzo" de determinismo de OpenAI (no es garantia total)
+  }
 
   const resp = await fetch(API_URL, {
     method: "POST",
