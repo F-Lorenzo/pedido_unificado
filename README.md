@@ -2,8 +2,7 @@
 
 Web para subir los PDFs de tus órdenes **o pegar pedidos escritos** (WhatsApp, papel),
 unirlos en un **pedido único** (sumando por producto + variante) y calcular la
-**facturación total**. Usa **GPT-4.1 Nano** (OpenAI, muy barato y con salida
-determinística) para leer todo — se procesa **de a uno**, mostrando un tiempo
+**facturación total**. Usa **GPT-5.6 Luna** (OpenAI, muy barato) para leer todo — se procesa **de a uno**, mostrando un tiempo
 estimado mientras corre — y exporta el pedido a **PDF** y **CSV**.
 
 ---
@@ -28,16 +27,20 @@ estimado mientras corre — y exporta el pedido a **PDF** y **CSV**.
 ## Paso 1 — Conseguir la API key de OpenAI
 
 1. Entrá a **https://platform.openai.com/api-keys** con tu cuenta (necesitás saldo
-   cargado — aunque sean un par de dólares, GPT-4.1 Nano es muy barato).
+   cargado — aunque sean un par de dólares, el modelo es muy barato).
 2. Clic en **"Create new secret key"**.
 3. Copiá la clave (empieza con `sk-...`). La vas a pegar en Vercel en el Paso 2.
 
-> No es gratis, pero es muy barato: GPT-4.1 Nano cuesta $0.10 / 1M tokens de entrada
-> y $0.40 / 1M de salida. Procesar 100 PDFs sale centavos de dólar. Al tener saldo
-> cargado también tenés límites de uso mucho más altos que cualquier capa gratuita.
-> Se eligió sobre GPT-5 Nano porque soporta `temperature=0`: con el mismo PDF da
-> siempre el mismo resultado (GPT-5 Nano fuerza una temperatura no-determinística
-> y podía dar cantidades o deletreos de variantes distintos entre corridas).
+> No es gratis, pero es muy barato: procesar 100 PDFs sale centavos de dólar. Al tener
+> saldo cargado también tenés límites de uso mucho más altos que cualquier capa gratuita.
+>
+> **Modelo:** antes se usaba GPT-4.1 Nano, pero OpenAI lo dio de baja el 23/10/2026
+> (tiraba `OpenAI 404 ... model_not_found`). Ahora se usa `gpt-5.6-luna`, el reemplazo
+> recomendado por OpenAI. Si en el futuro OpenAI da de baja este también, no hace
+> falta tocar código: cargá en Vercel la variable **`OPENAI_MODEL`** con el nombre del
+> modelo nuevo y redeployá. Los modelos GPT-5 no aceptan `temperature=0`, así que la
+> salida puede variar un poco entre corridas; la caché por archivo (ver más abajo)
+> garantiza que el mismo archivo dé siempre el mismo resultado.
 
 ---
 
@@ -106,9 +109,9 @@ pedido-unificado/
   todavía no procesaste NO se guardan (son pesados para `localStorage`), así que si
   se recarga la página antes de darle a "Sumar"/"Armar pedido", hay que volver a
   soltarlos.
-- **Caché de extracciones por archivo:** aunque `temperature=0` reduce mucho la
-  variación, OpenAI no garantiza una salida 100% idéntica siempre (es una limitación
-  conocida de su API, no de este código). Por eso cada PDF/pedido escrito se
+- **Caché de extracciones por archivo:** OpenAI no garantiza una salida 100% idéntica
+  siempre (los modelos GPT-5 ni siquiera aceptan `temperature=0`; es una limitación
+  de su API, no de este código). Por eso cada PDF/pedido escrito se
   identifica por un hash de su contenido exacto y el resultado se guarda en
   `localStorage`: si volvés a procesar el mismo archivo/texto (en esta corrida o en
   otra), se reusa el resultado guardado en vez de volver a llamar a la IA — así das
