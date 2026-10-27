@@ -332,6 +332,7 @@ async function procesar(modo) {
 
   const nuevasOrdenes = [];
   const nuevosErrores = [];
+  const leidosOk = new Set(); // archivos que esta tanda pudo leer, para borrar sus errores viejos
   const startTs = performance.now();
 
   try {
@@ -357,6 +358,7 @@ async function procesar(modo) {
         // Mismo archivo/texto ya procesado antes: reusamos el resultado tal
         // cual, sin volver a llamar a la IA (y sin pausa, no hubo request).
         nuevasOrdenes.push(cache[hash]);
+        leidosOk.add(s.name);
         continue;
       }
 
@@ -373,6 +375,7 @@ async function procesar(modo) {
 
       nuevasOrdenes.push(...(data.orders || []));
       nuevosErrores.push(...(data.errors || []));
+      if (data.orders && data.orders.length) leidosOk.add(s.name);
 
       if (hash && data.orders && data.orders[0]) guardarEnCache(hash, data.orders[0]);
 
@@ -382,6 +385,10 @@ async function procesar(modo) {
     }
 
     allOrders.push(...nuevasOrdenes);
+    // Si un archivo que antes fallo ahora se leyo bien, su error viejo ya no
+    // aplica: sin esto quedaba en "No se pudieron leer" (y guardado 24hs en el
+    // navegador) aunque el pedido ya estuviera sumado.
+    allErrors = allErrors.filter((e) => !leidosOk.has(e.archivo));
     allErrors.push(...nuevosErrores);
 
     const agg = PedidoAgg.aggregate(allOrders);
