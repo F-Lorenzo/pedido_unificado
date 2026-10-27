@@ -7,9 +7,10 @@
     "deploy": "vercel --prod"
   },
   "engines": {
-    "node": ">=18"
+    "node": "22.x"
   },
   "dependencies": {
-    "pdf-parse": "^1.1.1"
+    "pdf-parse": "^1.1.1",
+    "unpdf": "^1.9.1"
   }
 }

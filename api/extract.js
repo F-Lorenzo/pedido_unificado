@@ -4,7 +4,9 @@
 // La API key NUNCA se expone al navegador: vive solo aca, en el servidor,
 // leida desde la variable de entorno OPENAI_API_KEY.
 
+import { createHash } from "node:crypto";
 import pdfParse from "pdf-parse";
+import { extractText, getDocumentProxy } from "unpdf";
 
 // gpt-4.1-nano fue dado de baja por OpenAI el 23/10/2026 (devuelve 404
 // model_not_found). gpt-5.6-luna es el reemplazo que recomienda OpenAI.
@@ -124,6 +126,34 @@ function readBody(req) {
   });
 }
 
+// Lee el texto del PDF. Primero con pdf-parse (pdf.js de 2017, el de siempre,
+// asi los PDFs que ya andaban dan exactamente el mismo texto). Si falla
+// (ej. "bad XRef entry", "Command token too long", "Invalid number"), se
+// reintenta con unpdf (pdf.js actual), que recupera mucho mejor PDFs con la
+// estructura interna danada.
+async function leerTextoPdf(pdfBuffer) {
+  try {
+    return (await pdfParse(pdfBuffer)).text;
+  } catch (e1) {
+    try {
+      const pdf = await getDocumentProxy(new Uint8Array(pdfBuffer));
+      const { text } = await extractText(pdf, { mergePages: true });
+      return text;
+    } catch (e2) {
+      throw new Error(`pdf-parse: ${e1?.message || e1} | unpdf: ${e2?.message || e2}`);
+    }
+  }
+}
+
+// Huella de los bytes recibidos, para poder comparar en los logs contra el
+// archivo original (tamano y sha256) y ver si llego danado o es otro archivo.
+function huellaPdf(buf) {
+  const sha = createHash("sha256").update(buf).digest("hex").slice(0, 12);
+  const cabecera = buf.subarray(0, 8).toString("latin1");
+  const tieneEOF = buf.subarray(-1024).includes("%%EOF");
+  return `${buf.length}B sha256:${sha} cabecera:${JSON.stringify(cabecera)} %%EOF:${tieneEOF}`;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -200,12 +230,12 @@ async function extractOne(apiKey, item) {
     promptText = PROMPT_TEXTO + contenido;
   } else {
     let text;
+    const pdfBuffer = Buffer.from(String(item.dataBase64 || ""), "base64");
     try {
-      const pdfBuffer = Buffer.from(item.dataBase64, "base64");
-      ({ text } = await pdfParse(pdfBuffer));
+      text = await leerTextoPdf(pdfBuffer);
     } catch (e) {
       const err = new Error("El archivo no parece ser un PDF válido o está dañado.");
-      err.technicalDetail = String(e.message || e);
+      err.technicalDetail = `${String(e.message || e)} [recibido ${huellaPdf(pdfBuffer)} | navegador ${item.huellaNavegador || "?"}]`;
       throw err;
     }
     promptText = PROMPT_PDF + text;
